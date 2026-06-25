@@ -1,0 +1,44 @@
+name: soilsense
+description: "SoilSense — on-device soil testing & fertilizer recommendations for Nigerian maize and rice farmers."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # State management
+  flutter_riverpod: ^2.6.1
+
+  # Iterable extensions (firstWhereOrNull etc.)
+  collection: ^1.18.0
+
+  # Local database (Drift over SQLite)
+  drift: ^2.20.0
+  sqlite3_flutter_libs: ^0.5.24
+  path_provider: ^2.1.4
+  path: ^1.9.0
+
+  # Bluetooth Low Energy
+  flutter_blue_plus: ^1.36.0
+
+  # Formatting + charts
+  intl: ^0.19.0
+  fl_chart: ^0.69.0
+
+  # Typography
+  google_fonts: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  drift_dev: ^2.20.0
+  build_runner: ^2.4.13
+
+flutter:
+  uses-material-design: true
