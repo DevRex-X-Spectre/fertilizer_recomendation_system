@@ -26,6 +26,9 @@ dependencies:
   # Bluetooth Low Energy
   flutter_blue_plus: ^1.36.0
 
+  # Runtime permissions (Android 12+ BLUETOOTH_SCAN / BLUETOOTH_CONNECT)
+  permission_handler: ^11.3.1
+
   # Formatting + charts
   intl: ^0.19.0
   fl_chart: ^0.69.0

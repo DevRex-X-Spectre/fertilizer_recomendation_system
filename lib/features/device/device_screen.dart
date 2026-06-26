@@ -80,14 +80,17 @@ class _IdleView extends ConsumerWidget {
       if (!ok) return;
     }
 
-    // ── Step 2: kick off the scan ────────────────────────────────────
+    // ── Step 2: kick off the scan (this also requests runtime BT
+    // permissions on Android 12+) ─────────────────────────────────────
     await notifier.startScan();
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final notifier = ref.read(bleStateProvider.notifier);
-    final bluetoothOn = notifier.isBluetoothOn;
+    // WATCH the state so this rebuilds when the adapter state changes
+    // (i.e. when the user toggles Bluetooth in system settings).
+    final bleState = ref.watch(bleStateProvider);
+    final bluetoothOn = bleState.bluetoothOn;
     final theme = Theme.of(context);
 
     return SafeArea(
@@ -128,8 +131,9 @@ class _IdleView extends ConsumerWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Power on the hardware, keep it within range, '
-              'and tap Scan to connect.',
+              'Power on the probe, keep it nearby, then tap Scan. '
+              'You\'ll pick a device from the radar before anything '
+              'connects — SoilSense never auto-connects.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: const Color(0xFF6B7168),
@@ -139,7 +143,7 @@ class _IdleView extends ConsumerWidget {
 
             const SizedBox(height: 28),
 
-            // Bluetooth status indicator
+            // Bluetooth status indicator (rebuilds reactively now).
             _BluetoothStatusChip(bluetoothOn: bluetoothOn),
 
             const Spacer(flex: 3),
@@ -168,8 +172,8 @@ class _IdleView extends ConsumerWidget {
         icon: Icon(Icons.bluetooth_disabled, size: 40, color: AppTheme.accent),
         title: const Text('Bluetooth is off'),
         content: const Text(
-          'SoilSense needs Bluetooth to connect to your soil-testing '
-          'hardware. Turn it on now?',
+          'SoilSense needs Bluetooth to find your soil-testing hardware. '
+          'Turn it on now?',
         ),
         actions: [
           TextButton(
@@ -284,7 +288,8 @@ class _ScanningView extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Tap a device to view its details and connect.',
+                  'Tap a device to view its details — then choose '
+                  'Connect. Nothing connects until you tap.',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFF6B7168),
@@ -1015,7 +1020,7 @@ class _ErrorView extends ConsumerWidget {
             ),
             const SizedBox(height: 20),
             Text(
-              'Couldn\'t connect',
+              _errorTitle(state.errorMessage),
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                     fontWeight: FontWeight.w700,
@@ -1048,6 +1053,23 @@ class _ErrorView extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Pick a more accurate title than "Couldn't connect" when the error
+  /// is actually about permissions, scan, or adapter state.
+  String _errorTitle(String? message) {
+    final m = (message ?? '').toLowerCase();
+    if (m.contains('permission')) return 'Permission needed';
+    if (m.contains('bluetooth is turned off') ||
+        m.contains('bluetooth was turned off') ||
+        m.contains('bluetooth was not enabled') ||
+        m.contains('does not support bluetooth') ||
+        m.contains('could not turn on bluetooth')) {
+      return 'Bluetooth unavailable';
+    }
+    if (m.contains('scan')) return 'Scan failed';
+    if (m.contains('not a soilsense')) return 'Not a SoilSense device';
+    return 'Couldn\'t connect';
   }
 }
 

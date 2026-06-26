@@ -22,6 +22,7 @@ import 'dart:typed_data';
 import 'package:collection/collection.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../data/models.dart';
 
@@ -104,6 +105,12 @@ class BleState {
   final bool isReadingInProgress;
   final List<DiscoveredDevice> discoveredDevices;
 
+  /// Current Bluetooth adapter state. Reflects the real adapter at all times
+  /// because the notifier subscribes to FlutterBluePlus.adapterState and
+  /// keeps this in sync. UI should read this instead of asking the adapter
+  /// directly so it rebuilds on changes.
+  final BluetoothAdapterState adapterState;
+
   const BleState({
     this.connectionState = BleConnectionState.idle,
     this.deviceName,
@@ -111,7 +118,23 @@ class BleState {
     this.lastReading,
     this.isReadingInProgress = false,
     this.discoveredDevices = const [],
+    this.adapterState = BluetoothAdapterState.unknown,
   });
+
+  bool get bluetoothOn => adapterState == BluetoothAdapterState.on;
+
+  /// True when the adapter is permanently unable to scan/connect
+  /// (e.g. BLE is unsupported on this device).
+  bool get bluetoothUnavailable =>
+      adapterState == BluetoothAdapterState.unavailable;
+
+  /// True when the user must be prompted to turn Bluetooth on
+  /// (off or currently turning on).
+  bool get bluetoothOffOrTransitioning =>
+      adapterState == BluetoothAdapterState.off ||
+      adapterState == BluetoothAdapterState.turningOn ||
+      adapterState == BluetoothAdapterState.turningOff ||
+      adapterState == BluetoothAdapterState.unknown;
 
   BleState copyWith({
     BleConnectionState? connectionState,
@@ -120,6 +143,7 @@ class BleState {
     SensorValues? lastReading,
     bool? isReadingInProgress,
     List<DiscoveredDevice>? discoveredDevices,
+    BluetoothAdapterState? adapterState,
   }) {
     return BleState(
       connectionState: connectionState ?? this.connectionState,
@@ -128,6 +152,7 @@ class BleState {
       lastReading: lastReading ?? this.lastReading,
       isReadingInProgress: isReadingInProgress ?? this.isReadingInProgress,
       discoveredDevices: discoveredDevices ?? this.discoveredDevices,
+      adapterState: adapterState ?? this.adapterState,
     );
   }
 }
@@ -173,11 +198,18 @@ DiscoveredDevice discoveredDeviceFromScanResult(ScanResult r) {
 // ── BLE notifier ────────────────────────────────────────────────────────────
 
 class BleStateNotifier extends StateNotifier<BleState> {
-  BleStateNotifier() : super(const BleState());
+  BleStateNotifier() : super(BleState(adapterState: FlutterBluePlus.adapterStateNow)) {
+    // Keep state.adapterState in sync with the OS. UI rebuilds when this
+    // fires because Riverpod watches BleState.
+    _adapterSubscription = FlutterBluePlus.adapterState.listen((s) {
+      state = state.copyWith(adapterState: s);
+    });
+  }
 
   StreamSubscription<List<ScanResult>>? _scanSubscription;
   StreamSubscription<BluetoothConnectionState>? _deviceSubscription;
   StreamSubscription<List<int>>? _charSubscription;
+  StreamSubscription<BluetoothAdapterState>? _adapterSubscription;
   Timer? _scanTimeoutTimer;
   Timer? _readingTimer;
 
@@ -187,10 +219,46 @@ class BleStateNotifier extends StateNotifier<BleState> {
 
   // ── Public API ─────────────────────────────────────────────────────────
 
-  BluetoothAdapterState get adapterStateNow => FlutterBluePlus.adapterStateNow;
+  /// Read Bluetooth on/off from the synced state so it stays consistent
+  /// across rebuilds. Prefer checking state.bluetoothOn through the UI.
+  bool get isBluetoothOn => state.bluetoothOn;
 
-  bool get isBluetoothOn =>
-      FlutterBluePlus.adapterStateNow == BluetoothAdapterState.on;
+  /// Request the runtime permissions Android requires to scan + connect
+  /// over BLE. On Android 12+ these are BLUETOOTH_SCAN and
+  /// BLUETOOTH_CONNECT (both "runtime" — not auto-granted on install).
+  /// On older Android we also ask for fine location because scanning
+  /// returns the device's coarse location.
+  ///
+  /// Returns true when all required permissions are granted. On iOS the
+  /// permission_handler platform impl is a no-op for these (iOS only
+  /// requires the NSBluetoothAlwaysUsageDescription in Info.plist, which
+  /// flutter_blue_plus handles when its first BLE call is made).
+  Future<bool> requestPermissions() async {
+    final results = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.locationWhenInUse,
+    ].request();
+
+    final scanGranted = results[Permission.bluetoothScan]?.isGranted ?? true;
+    final connectGranted = results[Permission.bluetoothConnect]?.isGranted ?? true;
+    final locationGranted = results[Permission.locationWhenInUse]?.isGranted ?? true;
+
+    if (!scanGranted || !connectGranted || !locationGranted) {
+      // Build a specific message so the user knows exactly what to fix.
+      final missing = <String>[];
+      if (!scanGranted) missing.add('Nearby devices (Bluetooth scan)');
+      if (!connectGranted) missing.add('Bluetooth connection');
+      if (!locationGranted) missing.add('Location (needed for BLE scanning)');
+      _setError(
+        'SoilSense needs these permissions to find your device:\n'
+        '• ${missing.join('\n• ')}\n\n'
+        'Open Settings → Apps → SoilSense → Permissions and grant them.',
+      );
+      return false;
+    }
+    return true;
+  }
 
   /// If Bluetooth is off, request the user to turn it on. On Android this
   /// shows the system "Allow Bluetooth" prompt. On iOS this opens the
@@ -199,8 +267,7 @@ class BleStateNotifier extends StateNotifier<BleState> {
   Future<bool> ensureBluetoothOn({int timeoutSeconds = 30}) async {
     if (isBluetoothOn) return true;
 
-    final now = FlutterBluePlus.adapterStateNow;
-    if (now == BluetoothAdapterState.unavailable) {
+    if (state.bluetoothUnavailable) {
       _setError('This device does not support Bluetooth.');
       return false;
     }
@@ -224,6 +291,12 @@ class BleStateNotifier extends StateNotifier<BleState> {
   /// picks a device from the radar / list, opens its details, then taps
   /// Connect (only enabled for SoilSense devices).
   Future<void> startScan({Duration timeout = const Duration(seconds: 15)}) async {
+    // Android 12+ requires BLUETOOTH_SCAN at runtime. Without it,
+    // FlutterBluePlus.startScan throws and the user sees a generic
+    // "Couldn't connect" error. Request first.
+    final permsOk = await requestPermissions();
+    if (!permsOk) return;
+
     if (!isBluetoothOn) {
       _setError('Bluetooth is turned off. Please enable it and try again.');
       return;
@@ -253,7 +326,7 @@ class BleStateNotifier extends StateNotifier<BleState> {
         // We just no longer receive new results.
       });
     } catch (e) {
-      _setError('Scan error: $e');
+      _setError('Scan failed: $e');
     }
   }
 
@@ -279,7 +352,9 @@ class BleStateNotifier extends StateNotifier<BleState> {
 
   /// User-initiated connection. Called from the device details screen
   /// after the user taps Connect. Validates that the device is recognised
-  /// as a SoilSense device before attempting connection.
+  /// as a SoilSense device before attempting connection. NEVER called
+  /// automatically — the scan flow only populates the radar/list; the user
+  /// must explicitly tap a ping, open details, then tap Connect.
   Future<void> connectToDevice(BluetoothDevice device) async {
     // Cancel any ongoing scan so we don't keep collecting pings during
     // the connection handshake.
@@ -298,6 +373,16 @@ class BleStateNotifier extends StateNotifier<BleState> {
         'This device is not a SoilSense hardware. '
         'Only SoilSense devices can be connected.',
       );
+      return;
+    }
+
+    // Confirm runtime permissions are still granted (user may have revoked
+    // them in Settings between scan and connect).
+    final permsOk = await requestPermissions();
+    if (!permsOk) return;
+
+    if (!isBluetoothOn) {
+      _setError('Bluetooth was turned off. Please turn it on and try again.');
       return;
     }
 
@@ -556,6 +641,7 @@ class BleStateNotifier extends StateNotifier<BleState> {
     _scanSubscription?.cancel();
     _deviceSubscription?.cancel();
     _charSubscription?.cancel();
+    _adapterSubscription?.cancel();
     _scanTimeoutTimer?.cancel();
     _readingTimer?.cancel();
     _connectedDevice = null;
