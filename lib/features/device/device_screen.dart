@@ -1,6 +1,9 @@
 // lib/features/device/device_screen.dart
 // BLE device scan, connect, and run-test flow.
-// Idle → Bluetooth prompt → radar scanning → connected → run test → results.
+//
+// Idle → Bluetooth prompt → radar scanning with tappable pings +
+// device list → user picks a device → DeviceDetailsScreen → Connect →
+// connected view (with sensor read + run test) → results.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +15,7 @@ import '../../data/database.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
 import '../results/results_screen.dart';
+import 'device_details_screen.dart';
 
 class DeviceScreen extends ConsumerWidget {
   const DeviceScreen({super.key});
@@ -31,7 +35,11 @@ class DeviceScreen extends ConsumerWidget {
       case BleConnectionState.idle:
         return _IdleView(ref: ref);
       case BleConnectionState.scanning:
-        return const _ScanningView();
+        return _ScanningView(
+          devices: state.discoveredDevices,
+          onDeviceTap: (d) => _openDetails(context, d),
+          onRescan: () => ref.read(bleStateProvider.notifier).startScan(),
+        );
       case BleConnectionState.connecting:
         return const _ConnectingView();
       case BleConnectionState.discovering:
@@ -42,6 +50,14 @@ class DeviceScreen extends ConsumerWidget {
       case BleConnectionState.error:
         return _ErrorView(state: state, ref: ref);
     }
+  }
+
+  void _openDetails(BuildContext context, DiscoveredDevice device) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => DeviceDetailsScreen(device: device),
+      ),
+    );
   }
 }
 
@@ -213,39 +229,358 @@ class _BluetoothStatusChip extends StatelessWidget {
 // ── Scanning ────────────────────────────────────────────────────────────────
 
 class _ScanningView extends StatelessWidget {
-  const _ScanningView();
+  final List<DiscoveredDevice> devices;
+  final ValueChanged<DiscoveredDevice> onDeviceTap;
+  final VoidCallback onRescan;
+
+  const _ScanningView({
+    required this.devices,
+    required this.onDeviceTap,
+    required this.onRescan,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final pings = devices.map(RadarPing.fromDevice).toList();
 
     return SafeArea(
+      child: Column(
+        children: [
+          // ── Radar + status header ──────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Column(
+              children: [
+                Center(
+                  child: Container(
+                    width: 280,
+                    height: 280,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppTheme.primary.withValues(alpha: 0.04),
+                    ),
+                    child: Center(
+                      child: RadarAnimation(
+                        size: 260,
+                        color: AppTheme.primary,
+                        pings: pings,
+                        onPingTap: (ping) {
+                          final dev = devices.firstWhere(
+                            (d) => d.id == ping.id,
+                          );
+                          onDeviceTap(dev);
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _ScanStatusRow(
+                  count: devices.length,
+                  soilSenseCount:
+                      devices.where((d) => d.isSoilSense).length,
+                  onRescan: onRescan,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Tap a device to view its details and connect.',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF6B7168),
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // ── Discovered devices list ────────────────────────────────────
+          Expanded(
+            child: devices.isEmpty
+                ? _LookingHint()
+                : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                    itemCount: devices.length,
+                    separatorBuilder: (context, index) => const SizedBox(height: 8),
+                    itemBuilder: (context, i) =>
+                        _DeviceListTile(
+                      device: devices[i],
+                      onTap: () => onDeviceTap(devices[i]),
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScanStatusRow extends StatelessWidget {
+  final int count;
+  final int soilSenseCount;
+  final VoidCallback onRescan;
+
+  const _ScanStatusRow({
+    required this.count,
+    required this.soilSenseCount,
+    required this.onRescan,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: AppTheme.primary.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(99),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.8,
+                  color: AppTheme.primary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                count == 0
+                    ? 'Scanning…'
+                    : '$count device${count == 1 ? '' : 's'} found'
+                        '$soilSenseCount SoilSense',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.primary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        TextButton.icon(
+          onPressed: onRescan,
+          icon: const Icon(Icons.refresh, size: 16),
+          label: const Text('Rescan'),
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LookingHint extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Center(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        padding: const EdgeInsets.all(32),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Spacer(),
-            RadarAnimation(size: 320, color: AppTheme.primary),
-            const SizedBox(height: 32),
-            Text(
-              'Looking for nearby Bluetooth devices',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w700,
+            Icon(
+              Icons.bluetooth_searching,
+              size: 48,
+              color: AppTheme.primary.withValues(alpha: 0.5),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Listening for nearby devices…',
+              style: TextStyle(
+                color: Color(0xFF6B7168),
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Hold your SoilSense hardware close to the phone.\n'
-              'It should pair automatically once found.',
+            const SizedBox(height: 4),
+            const Text(
+              'Hold your SoilSense hardware close to the phone.',
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: const Color(0xFF6B7168),
-                height: 1.5,
+              style: TextStyle(
+                color: Color(0xFF9CA39B),
+                fontSize: 12,
               ),
             ),
-            const Spacer(flex: 2),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DeviceListTile extends StatelessWidget {
+  final DiscoveredDevice device;
+  final VoidCallback onTap;
+
+  const _DeviceListTile({required this.device, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final isSoil = device.isSoilSense;
+    final accent = isSoil ? AppTheme.primary : const Color(0xFF9CA39B);
+    final rssiQuality = _rssiQuality(device.rssi);
+
+    return Material(
+      color: AppTheme.surfaceTint,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isSoil
+                  ? AppTheme.primary.withValues(alpha: 0.30)
+                  : AppTheme.outlineVariant,
+              width: isSoil ? 1.4 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: accent.withValues(alpha: 0.12),
+                ),
+                child: Icon(
+                  isSoil ? Icons.sensors : Icons.bluetooth,
+                  color: accent,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            device.name,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (isSoil) ...[
+                          const SizedBox(width: 6),
+                          _MiniBadge(
+                            text: 'SoilSense',
+                            color: AppTheme.primary,
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      device.id,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF9CA39B),
+                        fontFamily: 'monospace',
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '${device.rssi} dBm',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: rssiQuality.color,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    rssiQuality.label,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF9CA39B),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 4),
+              const Icon(
+                Icons.chevron_right,
+                size: 20,
+                color: Color(0xFF9CA39B),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  _RssiQuality _rssiQuality(int rssi) {
+    if (rssi >= -60) {
+      return _RssiQuality('Strong', AppTheme.statusAdequate);
+    } else if (rssi >= -75) {
+      return _RssiQuality('Good', const Color(0xFF0891B2));
+    } else if (rssi >= -85) {
+      return _RssiQuality('Fair', AppTheme.statusLow);
+    } else {
+      return _RssiQuality('Weak', AppTheme.statusDeficient);
+    }
+  }
+}
+
+class _RssiQuality {
+  final String label;
+  final Color color;
+  const _RssiQuality(this.label, this.color);
+}
+
+class _MiniBadge extends StatelessWidget {
+  final String text;
+  final Color color;
+
+  const _MiniBadge({required this.text, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(99),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 9,
+          fontWeight: FontWeight.w700,
+          color: color,
+          letterSpacing: 0.4,
         ),
       ),
     );

@@ -1,7 +1,20 @@
 // lib/ble/ble_service.dart
-// Bluetooth Low Energy service — wraps flutter_blue_plus.
-// GATT profile: replace SERVICE_UUID and CHARACTERISTIC_UUID with your
-// hardware designer's values. Frame format is documented in _parseFrame().
+// Bluetooth Low BLE service — wraps flutter_blue_plus.
+//
+// Identity model
+// ──────────────
+// The firmware on the SoilSense hardware MUST advertise one of these two
+// signals so the app can recognise it:
+//   • Service UUID: 0001abc0-0000-1000-8000-00805f9b34fb
+//     (firmware: advertise this UUID in the advertisement packet)
+//   • Device name prefix: "SoilSense-"
+//     (firmware: set BLE device name to e.g. "SoilSense-A1")
+//
+// The app treats a device as "connectable" if either signal matches.
+// Replace _soilsenseServiceUuid with the UUID your firmware team has chosen.
+//
+// GATT profile: replace _serviceUuid and _characteristicUuid with the
+// values from your hardware designer.
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -12,8 +25,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/models.dart';
 
-// TODO (hardware integration): Replace with your device's actual UUIDs.
-// Contact your hardware engineer for these values.
+// ── SoilSense identity ────────────────────────────────────────────────────
+
+/// Service UUID advertised by the SoilSense firmware in its BLE packet.
+/// PRIMARY identity check. Replace this with the UUID your firmware team chose.
+final _soilsenseServiceUuid =
+    Guid('0001abc0-0000-1000-8000-00805f9b34fb');
+
+/// Secondary identity check. Firmware should set its BLE device name to
+/// something starting with this prefix (e.g. "SoilSense-A1").
+const _soilsenseNamePrefix = 'SoilSense-';
+
+// ── GATT profile (data characteristic) ────────────────────────────────────
+
 final _serviceUuid = Guid('0000ffe0-0000-1000-8000-00805f9b34fb');
 final _characteristicUuid = Guid('0000ffe1-0000-1000-8000-00805f9b34fb');
 
@@ -29,7 +53,48 @@ enum BleConnectionState {
   error,
 }
 
-// ── BLE state notifier ─────────────────────────────────────────────────────
+// ── Discovered device (visible on radar) ────────────────────────────────────
+
+/// One device found during scanning. Built from a flutter_blue_plus ScanResult.
+class DiscoveredDevice {
+  final BluetoothDevice device;
+  final String id;             // MAC address
+  final String name;
+  final int rssi;              // signal strength, typically -100..0 dBm
+  final List<Guid> advertisedServiceUuids;
+  final bool isSoilSense;      // computed at scan time
+  final String? manufacturerDataHex;
+
+  const DiscoveredDevice({
+    required this.device,
+    required this.id,
+    required this.name,
+    required this.rssi,
+    required this.advertisedServiceUuids,
+    required this.isSoilSense,
+    this.manufacturerDataHex,
+  });
+
+  /// Deterministic angle (radians, 0..2π) from the device id — same device
+  /// always lands at the same spot on the radar between rescans.
+  double radarAngle() {
+    var hash = 0;
+    for (final code in id.codeUnits) {
+      hash = (hash * 31 + code) & 0x7fffffff;
+    }
+    return (hash % 3600) / 3600.0 * 2 * 3.141592653589793;
+  }
+
+  /// Radius (0..1) from RSSI. Stronger signal (closer to 0) = smaller radius.
+  /// -40 dBm ≈ 0.30, -90 dBm ≈ 0.95.
+  double radarRadius() {
+    final clamped = rssi.clamp(-100, -30);
+    final normalized = (clamped + 100) / 70.0; // 0..1 (1 = strongest)
+    return 0.30 + (1 - normalized) * 0.65;
+  }
+}
+
+// ── BLE state ───────────────────────────────────────────────────────────────
 
 class BleState {
   final BleConnectionState connectionState;
@@ -37,6 +102,7 @@ class BleState {
   final String? errorMessage;
   final SensorValues? lastReading;
   final bool isReadingInProgress;
+  final List<DiscoveredDevice> discoveredDevices;
 
   const BleState({
     this.connectionState = BleConnectionState.idle,
@@ -44,6 +110,7 @@ class BleState {
     this.errorMessage,
     this.lastReading,
     this.isReadingInProgress = false,
+    this.discoveredDevices = const [],
   });
 
   BleState copyWith({
@@ -52,6 +119,7 @@ class BleState {
     String? errorMessage,
     SensorValues? lastReading,
     bool? isReadingInProgress,
+    List<DiscoveredDevice>? discoveredDevices,
   }) {
     return BleState(
       connectionState: connectionState ?? this.connectionState,
@@ -59,9 +127,50 @@ class BleState {
       errorMessage: errorMessage ?? this.errorMessage,
       lastReading: lastReading ?? this.lastReading,
       isReadingInProgress: isReadingInProgress ?? this.isReadingInProgress,
+      discoveredDevices: discoveredDevices ?? this.discoveredDevices,
     );
   }
 }
+
+// ── Identity helpers ────────────────────────────────────────────────────────
+
+bool isSoilSenseScanResult(ScanResult r) {
+  return isSoilSenseIdentity(
+    name: r.device.platformName,
+    advertisedServiceUuids: r.advertisementData.serviceUuids,
+  );
+}
+
+bool isSoilSenseIdentity({
+  required String name,
+  required List<Guid> advertisedServiceUuids,
+}) {
+  if (advertisedServiceUuids.contains(_soilsenseServiceUuid)) return true;
+  if (name.startsWith(_soilsenseNamePrefix)) return true;
+  return false;
+}
+
+DiscoveredDevice discoveredDeviceFromScanResult(ScanResult r) {
+  return DiscoveredDevice(
+    device: r.device,
+    id: r.device.remoteId.str,
+    name: r.device.platformName.isNotEmpty
+        ? r.device.platformName
+        : '(unnamed)',
+    rssi: r.rssi,
+    advertisedServiceUuids: r.advertisementData.serviceUuids,
+    isSoilSense: isSoilSenseScanResult(r),
+    manufacturerDataHex: r.advertisementData.manufacturerData.isNotEmpty
+        ? r.advertisementData.manufacturerData.entries
+            .map((e) =>
+                '${e.key.toRadixString(16).padLeft(4, '0')}: '
+                '${e.value.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}')
+            .join(' | ')
+        : null,
+  );
+}
+
+// ── BLE notifier ────────────────────────────────────────────────────────────
 
 class BleStateNotifier extends StateNotifier<BleState> {
   BleStateNotifier() : super(const BleState());
@@ -69,6 +178,7 @@ class BleStateNotifier extends StateNotifier<BleState> {
   StreamSubscription<List<ScanResult>>? _scanSubscription;
   StreamSubscription<BluetoothConnectionState>? _deviceSubscription;
   StreamSubscription<List<int>>? _charSubscription;
+  Timer? _scanTimeoutTimer;
   Timer? _readingTimer;
 
   BluetoothDevice? _connectedDevice;
@@ -77,10 +187,8 @@ class BleStateNotifier extends StateNotifier<BleState> {
 
   // ── Public API ─────────────────────────────────────────────────────────
 
-  /// Returns the current bluetooth adapter state synchronously.
   BluetoothAdapterState get adapterStateNow => FlutterBluePlus.adapterStateNow;
 
-  /// True if Bluetooth is currently on.
   bool get isBluetoothOn =>
       FlutterBluePlus.adapterStateNow == BluetoothAdapterState.on;
 
@@ -91,7 +199,6 @@ class BleStateNotifier extends StateNotifier<BleState> {
   Future<bool> ensureBluetoothOn({int timeoutSeconds = 30}) async {
     if (isBluetoothOn) return true;
 
-    // Not available on this device (e.g. emulator without BT, or desktop).
     final now = FlutterBluePlus.adapterStateNow;
     if (now == BluetoothAdapterState.unavailable) {
       _setError('This device does not support Bluetooth.');
@@ -112,60 +219,101 @@ class BleStateNotifier extends StateNotifier<BleState> {
     return on;
   }
 
-  Future<void> startScan() async {
-    // If adapter is off, fall back to the off state so the UI can decide.
-    // In practice the UI calls ensureBluetoothOn() first, but guard anyway.
+  /// Begin scanning. Devices are collected into state.discoveredDevices
+  /// as advertisements arrive. The scan does NOT auto-connect — the user
+  /// picks a device from the radar / list, opens its details, then taps
+  /// Connect (only enabled for SoilSense devices).
+  Future<void> startScan({Duration timeout = const Duration(seconds: 15)}) async {
     if (!isBluetoothOn) {
-      state = state.copyWith(
-        connectionState: BleConnectionState.error,
-        errorMessage:
-            'Bluetooth is turned off. Please enable it and try again.',
+      _setError('Bluetooth is turned off. Please enable it and try again.');
+      return;
+    }
+
+    // Reset state for a fresh scan.
+    state = state.copyWith(
+      connectionState: BleConnectionState.scanning,
+      discoveredDevices: const [],
+      errorMessage: null,
+    );
+    _retryCount = 0;
+
+    try {
+      await FlutterBluePlus.startScan(timeout: timeout);
+
+      _scanSubscription = FlutterBluePlus.scanResults.listen(_onScanResults);
+
+      _scanTimeoutTimer?.cancel();
+      _scanTimeoutTimer = Timer(timeout, () {
+        if (state.connectionState != BleConnectionState.scanning) return;
+        // Stop collecting results; let the UI show whatever was found.
+        _scanSubscription?.cancel();
+        FlutterBluePlus.stopScan();
+        // Stay in "scanning" state so the user can keep interacting with
+        // the radar and pick a device, OR tap "Scan again" to restart.
+        // We just no longer receive new results.
+      });
+    } catch (e) {
+      _setError('Scan error: $e');
+    }
+  }
+
+  void _onScanResults(List<ScanResult> results) {
+    // Dedupe by MAC address, keeping the highest RSSI observed.
+    final byId = <String, DiscoveredDevice>{};
+    for (final r in results) {
+      final dev = discoveredDeviceFromScanResult(r);
+      final existing = byId[dev.id];
+      if (existing == null || dev.rssi > existing.rssi) {
+        byId[dev.id] = dev;
+      }
+    }
+    final list = byId.values.toList()
+      // SoilSense first, then by signal strength.
+      ..sort((a, b) {
+        if (a.isSoilSense != b.isSoilSense) return a.isSoilSense ? -1 : 1;
+        return b.rssi.compareTo(a.rssi);
+      });
+
+    state = state.copyWith(discoveredDevices: list);
+  }
+
+  /// User-initiated connection. Called from the device details screen
+  /// after the user taps Connect. Validates that the device is recognised
+  /// as a SoilSense device before attempting connection.
+  Future<void> connectToDevice(BluetoothDevice device) async {
+    // Cancel any ongoing scan so we don't keep collecting pings during
+    // the connection handshake.
+    _scanSubscription?.cancel();
+    _scanTimeoutTimer?.cancel();
+    await FlutterBluePlus.stopScan();
+
+    // Find the discovered record for this device to know if it's SoilSense.
+    final dev = state.discoveredDevices.firstWhereOrNull(
+      (d) => d.id == device.remoteId.str,
+    );
+    final isSoilSense = dev?.isSoilSense ?? false;
+
+    if (!isSoilSense) {
+      _setError(
+        'This device is not a SoilSense hardware. '
+        'Only SoilSense devices can be connected.',
       );
       return;
     }
 
-    state = state.copyWith(connectionState: BleConnectionState.scanning);
+    state = state.copyWith(
+      connectionState: BleConnectionState.connecting,
+      deviceName: device.platformName.isNotEmpty
+          ? device.platformName
+          : '(unnamed)',
+      errorMessage: null,
+    );
+
     _retryCount = 0;
-
-    try {
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 15));
-
-      _scanSubscription = FlutterBluePlus.scanResults.listen((results) async {
-        // Pick the first named device.
-        final soilDevice = results.firstWhereOrNull(
-          (r) => r.device.platformName.isNotEmpty,
-        );
-
-        if (soilDevice != null) {
-          await _scanSubscription?.cancel();
-          await FlutterBluePlus.stopScan();
-          await _connectToDevice(soilDevice.device);
-        }
-      });
-
-      // Timeout after 15s
-      Future.delayed(const Duration(seconds: 15), () {
-        _scanSubscription?.cancel();
-        FlutterBluePlus.stopScan();
-        if (state.connectionState == BleConnectionState.scanning) {
-          state = state.copyWith(
-            connectionState: BleConnectionState.error,
-            errorMessage:
-                'No SoilSense device found. Make sure your device is on and nearby.',
-          );
-        }
-      });
-    } catch (e) {
-      state = state.copyWith(
-        connectionState: BleConnectionState.error,
-        errorMessage: 'Scan error: $e',
-      );
-    }
+    await _connectWithRetry(device);
   }
 
-  Future<void> _connectToDevice(BluetoothDevice device) async {
-    state = state.copyWith(connectionState: BleConnectionState.connecting);
-
+  Future<void> _connectWithRetry(BluetoothDevice device) async {
     try {
       await device.connect(timeout: const Duration(seconds: 10));
       _connectedDevice = device;
@@ -182,12 +330,28 @@ class BleStateNotifier extends StateNotifier<BleState> {
 
       state = state.copyWith(
         connectionState: BleConnectionState.discovering,
-        deviceName: device.platformName,
+        deviceName: device.platformName.isNotEmpty
+            ? device.platformName
+            : '(unnamed)',
       );
 
       await _discoverAndRead(device);
     } catch (e) {
-      await _handleConnectionError(device, e);
+      if (_retryCount < _maxRetries) {
+        _retryCount++;
+        state = state.copyWith(
+          connectionState: BleConnectionState.connecting,
+          errorMessage:
+              'Connection failed (attempt $_retryCount of $_maxRetries). Retrying…',
+        );
+        await Future.delayed(const Duration(seconds: 2));
+        await _connectWithRetry(device);
+      } else {
+        _setError(
+          'Could not connect to ${device.platformName.isNotEmpty ? device.platformName : "device"}. '
+          'Make sure it is on and nearby.',
+        );
+      }
     }
   }
 
@@ -195,12 +359,10 @@ class BleStateNotifier extends StateNotifier<BleState> {
     try {
       final services = await device.discoverServices();
 
-      // Find our service
+      // Find our service.
       BluetoothService? soilService = services.firstWhereOrNull(
         (s) => s.uuid == _serviceUuid,
       );
-
-      // Fallback: first service with a notifyable/readable characteristic.
       soilService ??= services.firstWhereOrNull(
         (s) => s.characteristics.any(
           (c) => c.properties.notify || c.properties.read,
@@ -208,33 +370,24 @@ class BleStateNotifier extends StateNotifier<BleState> {
       );
 
       if (soilService == null) {
-        state = state.copyWith(
-          connectionState: BleConnectionState.error,
-          errorMessage: 'No compatible BLE service found on this device.',
-        );
+        _setError('No compatible BLE service found on this device.');
         return;
       }
 
-      // Find characteristic
       var char = soilService.characteristics.firstWhereOrNull(
         (c) => c.uuid == _characteristicUuid,
       );
-      // Fallback: first notifyable or readable characteristic.
       char ??= soilService.characteristics.firstWhereOrNull(
         (c) => c.properties.notify || c.properties.read,
       );
 
       if (char == null) {
-        state = state.copyWith(
-          connectionState: BleConnectionState.error,
-          errorMessage: 'No readable characteristic found.',
-        );
+        _setError('No readable characteristic found.');
         return;
       }
 
       state = state.copyWith(connectionState: BleConnectionState.connected);
 
-      // Subscribe to notifications (for streaming sensors)
       if (char.properties.notify) {
         await char.setNotifyValue(true);
         _charSubscription = char.lastValueStream.listen((data) {
@@ -245,20 +398,14 @@ class BleStateNotifier extends StateNotifier<BleState> {
         });
       }
 
-      // Read current value (for request-response sensors)
       if (char.properties.read) {
         await _triggerReadingAndWait(char);
       }
     } catch (e) {
-      state = state.copyWith(
-        connectionState: BleConnectionState.error,
-        errorMessage: 'Discover error: $e',
-      );
+      _setError('Discover error: $e');
     }
   }
 
-  /// Triggers a reading by writing a command byte (0x01 = "read sensors")
-  /// then waits for the response on the notification stream.
   Future<void> triggerReading() async {
     if (_connectedDevice == null) {
       state = state.copyWith(errorMessage: 'No device connected.');
@@ -280,20 +427,16 @@ class BleStateNotifier extends StateNotifier<BleState> {
       }
 
       if (char == null) {
-        state = state.copyWith(
-          errorMessage: 'Characteristic not found for write.',
-        );
+        state = state.copyWith(errorMessage: 'Characteristic not found for write.');
         return;
       }
 
       if (char.properties.write) {
-        // Write 0x01 to trigger a sensor reading.
         await char.write([0x01], withoutResponse: false);
       }
 
       state = state.copyWith(isReadingInProgress: true);
 
-      // Timeout after 10s if no data comes back.
       _readingTimer?.cancel();
       _readingTimer = Timer(const Duration(seconds: 10), () {
         if (state.isReadingInProgress) {
@@ -318,15 +461,14 @@ class BleStateNotifier extends StateNotifier<BleState> {
       await char.write([0x01], withoutResponse: false);
     }
 
-    // Timeout after 10s
     _readingTimer?.cancel();
     _readingTimer = Timer(const Duration(seconds: 10), () {
       if (state.isReadingInProgress) {
         state = state.copyWith(
           isReadingInProgress: false,
           errorMessage:
-              'Sensor reading timed out. Make sure the device is '
-              'actively sampling and within range.',
+              'Sensor reading timed out. Make sure the device is actively '
+              'sampling and within range.',
         );
       }
     });
@@ -336,6 +478,17 @@ class BleStateNotifier extends StateNotifier<BleState> {
     await _connectedDevice?.disconnect();
     _cleanup();
     state = const BleState(connectionState: BleConnectionState.idle);
+  }
+
+  /// Stop scanning but keep whatever devices have been discovered so far.
+  Future<void> stopScan() async {
+    _scanSubscription?.cancel();
+    _scanTimeoutTimer?.cancel();
+    await FlutterBluePlus.stopScan();
+    // Move out of scanning state but keep the discovered list.
+    if (state.connectionState == BleConnectionState.scanning) {
+      state = state.copyWith(connectionState: BleConnectionState.idle);
+    }
   }
 
   void clearError() {
@@ -365,35 +518,19 @@ class BleStateNotifier extends StateNotifier<BleState> {
   //   [9]  = Salinity low byte
   //   [10] = Moisture byte        (0–100 %)
   //   [11] = Checksum (XOR of bytes 0–10)
-  //
-  // If your hardware uses a different format, update _parseFrame below.
 
   SensorValues? _parseFrame(List<int> data) {
     if (data.length < 12) return null;
-
     try {
       final bytes = Uint8List.fromList(data);
-
-      // Verify header
       if (bytes[0] != 0xAA) return null;
 
-      // Verify checksum
-      int checksum = 0;
-      for (int i = 0; i < 11; i++) {
-        checksum ^= bytes[i];
-      }
-      // Note: we accept even if checksum fails, but flag in logs would be nice.
-      if (checksum != bytes[11]) {
-        // Checksum mismatch — data may be corrupted.
-      }
-
-      // Parse little-endian 16-bit values.
-      final n  = _bytesToDouble(bytes[1], bytes[2]) / 10.0;  // ppm
+      final n  = _bytesToDouble(bytes[1], bytes[2]) / 10.0;
       final p  = _bytesToDouble(bytes[3], bytes[4]) / 10.0;
       final k  = _bytesToDouble(bytes[5], bytes[6]) / 10.0;
       final ph = bytes[7] / 10.0;
-      final ec = _bytesToDouble(bytes[8], bytes[9]) / 100.0; // dS/m
-      final m  = bytes[10].toDouble();                        // %
+      final ec = _bytesToDouble(bytes[8], bytes[9]) / 100.0;
+      final m  = bytes[10].toDouble();
 
       final values = SensorValues(
         nitrogen: n,
@@ -403,45 +540,23 @@ class BleStateNotifier extends StateNotifier<BleState> {
         salinity: ec,
         moisture: m,
       );
-
       state = state.copyWith(
         lastReading: values,
         isReadingInProgress: false,
       );
-
       return values;
     } catch (_) {
       return null;
     }
   }
 
-  double _bytesToDouble(int high, int low) {
-    return (high << 8 | low).toDouble();
-  }
-
-  // ── Retry logic ─────────────────────────────────────────────────────────
-  Future<void> _handleConnectionError(BluetoothDevice device, Object e) async {
-    if (_retryCount < _maxRetries) {
-      _retryCount++;
-      state = state.copyWith(
-        connectionState: BleConnectionState.connecting,
-        errorMessage: 'Connection failed (attempt $_retryCount). Retrying...',
-      );
-      await Future.delayed(const Duration(seconds: 2));
-      await _connectToDevice(device);
-    } else {
-      state = state.copyWith(
-        connectionState: BleConnectionState.error,
-        errorMessage:
-            'Could not connect to device. Make sure it is on and nearby.',
-      );
-    }
-  }
+  double _bytesToDouble(int high, int low) => (high << 8 | low).toDouble();
 
   void _cleanup() {
     _scanSubscription?.cancel();
     _deviceSubscription?.cancel();
     _charSubscription?.cancel();
+    _scanTimeoutTimer?.cancel();
     _readingTimer?.cancel();
     _connectedDevice = null;
     _retryCount = 0;

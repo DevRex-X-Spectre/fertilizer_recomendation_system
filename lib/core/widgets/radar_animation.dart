@@ -1,26 +1,65 @@
 // lib/core/widgets/radar_animation.dart
-// A radar-style scanning animation. Concentric circles + rotating sweep
-// with a trailing gradient. Used by the device screen during BLE scan.
+// Radar-style scanning animation with tappable device pings.
+//
+// The sweep rotates underneath via a CustomPainter. Each discovered device
+// is rendered as a separate widget (Positioned + GestureDetector) so it can
+// be tapped individually to open the device details screen.
 
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-class RadarAnimation extends StatefulWidget {
-  /// Overall size in logical pixels. Animation fits inside a square of this size.
-  final double size;
+import '../../ble/ble_service.dart' show DiscoveredDevice;
+import '../theme.dart';
 
-  /// Primary color used for circles, sweep, and center glow.
+/// One ping position on the radar — wraps a discovered device with the
+/// computed radar angle/radius so the parent doesn't recompute per frame.
+class RadarPing {
+  final String id;
+  final String label;
+  final double angle;        // radians; 0 = top, clockwise positive
+  final double radius;       // 0..1 of radar radius (smaller = closer to center)
+  final bool isHighlighted;  // true = SoilSense (larger, brighter, labelled)
   final Color color;
 
-  /// How long one full sweep takes.
+  const RadarPing({
+    required this.id,
+    required this.label,
+    required this.angle,
+    required this.radius,
+    required this.isHighlighted,
+    required this.color,
+  });
+
+  /// Build a RadarPing from a DiscoveredDevice + display label.
+  factory RadarPing.fromDevice(DiscoveredDevice device) {
+    return RadarPing(
+      id: device.id,
+      label: device.isSoilSense && device.name.startsWith('SoilSense')
+          ? device.name
+          : device.name,
+      angle: device.radarAngle(),
+      radius: device.radarRadius(),
+      isHighlighted: device.isSoilSense,
+      color: device.isSoilSense ? AppTheme.primary : const Color(0xFF9CA39B),
+    );
+  }
+}
+
+class RadarAnimation extends StatefulWidget {
+  final double size;
+  final Color color;
   final Duration period;
+  final List<RadarPing> pings;
+  final ValueChanged<RadarPing>? onPingTap;
 
   const RadarAnimation({
     super.key,
     this.size = 280,
-    this.color = const Color(0xFF2E7D32),
+    this.color = const Color(0xFF1B5E20),
     this.period = const Duration(seconds: 3),
+    this.pings = const [],
+    this.onPingTap,
   });
 
   @override
@@ -30,14 +69,6 @@ class RadarAnimation extends StatefulWidget {
 class _RadarAnimationState extends State<RadarAnimation>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
-
-  // Pseudo-random fixed positions for the four "detected" pings, so they
-  // feel organic but don't jitter between frames.
-  static final List<_Ping> _pings = List.generate(4, (i) {
-    final angle = (i * math.pi / 2) + (math.pi / 8);
-    final radius = 0.45 + (i % 3) * 0.15;
-    return _Ping(angle: angle, radius: radius, phase: i * 0.27);
-  });
 
   @override
   void initState() {
@@ -66,46 +97,164 @@ class _RadarAnimationState extends State<RadarAnimation>
     return SizedBox(
       width: widget.size,
       height: widget.size,
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) {
-          return CustomPaint(
-            painter: _RadarPainter(
-              progress: _controller.value,
-              color: widget.color,
-              pings: _pings,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Sweep animation underneath
+          AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) => CustomPaint(
+              size: Size(widget.size, widget.size),
+              painter: _RadarSweepPainter(
+                progress: _controller.value,
+                color: widget.color,
+              ),
             ),
-          );
-        },
+          ),
+          // Tappable device pings on top
+          ...widget.pings.map(_buildPing),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPing(RadarPing ping) {
+    final maxRadius = widget.size / 2;
+    // Convert angle (0=top, clockwise) to x,y. 0 rad → top → (0, -r).
+    final dx = ping.radius * maxRadius * math.sin(ping.angle);
+    final dy = -ping.radius * maxRadius * math.cos(ping.angle);
+
+    final outerSize = ping.isHighlighted ? 28.0 : 14.0;
+    final innerSize = ping.isHighlighted ? 10.0 : 5.0;
+
+    final pingWidget = _PingDot(
+      outerSize: outerSize,
+      innerSize: innerSize,
+      color: ping.color,
+      isHighlighted: ping.isHighlighted,
+    );
+
+    final positioned = Positioned(
+      left: widget.size / 2 + dx - outerSize / 2,
+      top: widget.size / 2 + dy - outerSize / 2,
+      width: outerSize,
+      height: outerSize,
+      child: GestureDetector(
+        onTap: widget.onPingTap == null ? null : () => widget.onPingTap!(ping),
+        behavior: HitTestBehavior.opaque,
+        child: Center(child: pingWidget),
+      ),
+    );
+
+    if (!ping.isHighlighted) return positioned;
+
+    // Highlighted (SoilSense) pings: also show the device label so the
+    // user can identify their device without tapping.
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        positioned,
+        Positioned(
+          left: widget.size / 2 + dx + outerSize / 2 + 4,
+          top: widget.size / 2 + dy - 8,
+          child: _PingLabel(text: ping.label),
+        ),
+      ],
+    );
+  }
+}
+
+class _PingDot extends StatelessWidget {
+  final double outerSize;
+  final double innerSize;
+  final Color color;
+  final bool isHighlighted;
+
+  const _PingDot({
+    required this.outerSize,
+    required this.innerSize,
+    required this.color,
+    required this.isHighlighted,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: outerSize,
+      height: outerSize,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: color.withValues(alpha: isHighlighted ? 0.25 : 0.18),
+      ),
+      child: Center(
+        child: Container(
+          width: innerSize,
+          height: innerSize,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color,
+            border: isHighlighted
+                ? Border.all(color: Colors.white, width: 2)
+                : null,
+          ),
+        ),
       ),
     );
   }
 }
 
-class _Ping {
-  final double angle;     // direction from center (radians)
-  final double radius;    // 0..1 of painter radius
-  final double phase;     // 0..1, used to stagger blink
-  const _Ping({required this.angle, required this.radius, required this.phase});
+class _PingLabel extends StatelessWidget {
+  final String text;
+  const _PingLabel({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: AppTheme.primary,
+        borderRadius: BorderRadius.circular(99),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.primary.withValues(alpha: 0.30),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.sensors, size: 12, color: Colors.white),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class _RadarPainter extends CustomPainter {
-  final double progress; // 0..1 (loops every animation period)
-  final Color color;
-  final List<_Ping> pings;
+// ── Sweep + concentric rings (no pings — those live in the widget tree) ──
 
-  _RadarPainter({
-    required this.progress,
-    required this.color,
-    required this.pings,
-  });
+class _RadarSweepPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+
+  _RadarSweepPainter({required this.progress, required this.color});
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final maxRadius = size.shortestSide / 2;
 
-    // ── Outer dark disc (gives the radar its "screen" feel) ─────────────
+    // Outer dark disc
     final bgPaint = Paint()
       ..shader = RadialGradient(
         colors: [
@@ -117,7 +266,7 @@ class _RadarPainter extends CustomPainter {
       ).createShader(Rect.fromCircle(center: center, radius: maxRadius));
     canvas.drawCircle(center, maxRadius, bgPaint);
 
-    // ── Concentric rings ────────────────────────────────────────────────
+    // Concentric rings
     for (int i = 1; i <= 3; i++) {
       final r = maxRadius * i / 3;
       final opacity = 0.18 + (1.0 - (i / 4.0)) * 0.12;
@@ -128,7 +277,7 @@ class _RadarPainter extends CustomPainter {
       canvas.drawCircle(center, r, paint);
     }
 
-    // Crosshair lines (very subtle).
+    // Crosshair lines
     final crossPaint = Paint()
       ..color = color.withValues(alpha: 0.10)
       ..strokeWidth = 1.0;
@@ -143,26 +292,23 @@ class _RadarPainter extends CustomPainter {
       crossPaint,
     );
 
-    // ── Sweep ───────────────────────────────────────────────────────────
-    // The sweep uses a SweepGradient over a full circle, masked so only
-    // the trailing ~80° of the sweep is visible. This is more elegant
-    // than drawing a straight line + gradient.
+    // Sweep
     final sweepStart = progress * 2 * math.pi;
-    final sweepSpan = math.pi * 0.42; // ~75° trailing arc
+    final sweepSpan = math.pi * 0.42;
 
     final sweepPaint = Paint()
       ..shader = SweepGradient(
-      startAngle: sweepStart - sweepSpan,
-      endAngle: sweepStart,
-      tileMode: TileMode.clamp,
-      colors: [
-        color.withValues(alpha: 0.0),
-        color.withValues(alpha: 0.45),
-        color.withValues(alpha: 0.0),
-      ],
-      stops: const [0.0, 0.85, 1.0],
-      transform: GradientRotation(-math.pi / 2),
-    ).createShader(Rect.fromCircle(center: center, radius: maxRadius));
+        startAngle: sweepStart - sweepSpan,
+        endAngle: sweepStart,
+        tileMode: TileMode.clamp,
+        colors: [
+          color.withValues(alpha: 0.0),
+          color.withValues(alpha: 0.45),
+          color.withValues(alpha: 0.0),
+        ],
+        stops: const [0.0, 0.85, 1.0],
+        transform: GradientRotation(-math.pi / 2),
+      ).createShader(Rect.fromCircle(center: center, radius: maxRadius));
 
     final sweepPath = Path()
       ..addArc(
@@ -172,8 +318,8 @@ class _RadarPainter extends CustomPainter {
       );
     canvas.drawPath(sweepPath, sweepPaint);
 
-    // Leading edge of the sweep — a thin bright line.
-    final leadingEdgeStart = Offset(
+    // Leading edge
+    final leadingEdgeEnd = Offset(
       center.dx + maxRadius * math.cos(sweepStart - math.pi / 2),
       center.dy + maxRadius * math.sin(sweepStart - math.pi / 2),
     );
@@ -181,50 +327,10 @@ class _RadarPainter extends CustomPainter {
       ..color = color.withValues(alpha: 0.85)
       ..strokeWidth = 1.6
       ..strokeCap = StrokeCap.round;
-    canvas.drawLine(center, leadingEdgeStart, edgePaint);
+    canvas.drawLine(center, leadingEdgeEnd, edgePaint);
 
-    // ── Detected pings ─────────────────────────────────────────────────
-    // Each ping blinks based on its phase relative to sweep progress.
-    for (final ping in pings) {
-      // Distance the sweep has travelled through this ping's angle.
-      var delta = (progress * 2 * math.pi) - ping.angle;
-      // Wrap to [0, 2π).
-      delta = delta % (2 * math.pi);
-      if (delta < 0) delta += 2 * math.pi;
-
-      // Ping lights up briefly after the sweep passes it, then fades.
-      double alpha = 0;
-      if (delta < math.pi * 0.7) {
-        alpha = (1.0 - (delta / (math.pi * 0.7)));
-      }
-
-      if (alpha > 0.01) {
-        final pingPos = Offset(
-          center.dx + maxRadius * ping.radius * math.cos(ping.angle - math.pi / 2),
-          center.dy + maxRadius * ping.radius * math.sin(ping.angle - math.pi / 2),
-        );
-
-        // Halo
-        canvas.drawCircle(
-          pingPos,
-          8,
-          Paint()..color = color.withValues(alpha: alpha * 0.25),
-        );
-        // Bright dot
-        canvas.drawCircle(
-          pingPos,
-          3.5,
-          Paint()..color = color.withValues(alpha: alpha),
-        );
-      }
-    }
-
-    // ── Center dot ─────────────────────────────────────────────────────
-    canvas.drawCircle(
-      center,
-      4,
-      Paint()..color = color,
-    );
+    // Center dot
+    canvas.drawCircle(center, 4, Paint()..color = color);
     canvas.drawCircle(
       center,
       8,
@@ -233,6 +339,6 @@ class _RadarPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_RadarPainter old) =>
+  bool shouldRepaint(_RadarSweepPainter old) =>
       old.progress != progress || old.color != color;
 }
