@@ -119,3 +119,5 @@ Rules are implemented in Dart in `lib/engine/recommendation_engine.dart`. Thresh
 ## License
 
 Private / All rights reserved.
+
+claude --resume f48393d5-7981-474b-9d04-8d664ee9ff16

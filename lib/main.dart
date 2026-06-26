@@ -51,26 +51,36 @@ class _AppShellState extends State<AppShell> {
         index: _selectedIndex,
         children: _pages,
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (i) => setState(() => _selectedIndex = i),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.grass_outlined),
-            selectedIcon: Icon(Icons.grass),
-            label: 'My Fields',
+      bottomNavigationBar: Container(
+        decoration: const BoxDecoration(
+          border: Border(
+            top: BorderSide(color: AppTheme.outlineVariant, width: 1),
           ),
-          NavigationDestination(
-            icon: Icon(Icons.bluetooth_searching_outlined),
-            selectedIcon: Icon(Icons.bluetooth_searching),
-            label: 'Device',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.history_outlined),
-            selectedIcon: Icon(Icons.history),
-            label: 'History',
-          ),
-        ],
+        ),
+        child: NavigationBar(
+          selectedIndex: _selectedIndex,
+          onDestinationSelected: (i) => setState(() => _selectedIndex = i),
+          height: 68,
+          backgroundColor: AppTheme.surfaceTint,
+          indicatorColor: AppTheme.primaryContainer,
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.grass_outlined),
+              selectedIcon: Icon(Icons.grass),
+              label: 'Fields',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.bluetooth_searching_outlined),
+              selectedIcon: Icon(Icons.bluetooth_searching),
+              label: 'Device',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.timeline_outlined),
+              selectedIcon: Icon(Icons.timeline),
+              label: 'History',
+            ),
+          ],
+        ),
       ),
     );
   }

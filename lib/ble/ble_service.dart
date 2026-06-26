@@ -77,20 +77,57 @@ class BleStateNotifier extends StateNotifier<BleState> {
 
   // ── Public API ─────────────────────────────────────────────────────────
 
+  /// Returns the current bluetooth adapter state synchronously.
+  BluetoothAdapterState get adapterStateNow => FlutterBluePlus.adapterStateNow;
+
+  /// True if Bluetooth is currently on.
+  bool get isBluetoothOn =>
+      FlutterBluePlus.adapterStateNow == BluetoothAdapterState.on;
+
+  /// If Bluetooth is off, request the user to turn it on. On Android this
+  /// shows the system "Allow Bluetooth" prompt. On iOS this opens the
+  /// permission prompt. Returns true if Bluetooth is on after the call,
+  /// false if it couldn't be enabled (denied, unsupported, timeout).
+  Future<bool> ensureBluetoothOn({int timeoutSeconds = 30}) async {
+    if (isBluetoothOn) return true;
+
+    // Not available on this device (e.g. emulator without BT, or desktop).
+    final now = FlutterBluePlus.adapterStateNow;
+    if (now == BluetoothAdapterState.unavailable) {
+      _setError('This device does not support Bluetooth.');
+      return false;
+    }
+
+    try {
+      await FlutterBluePlus.turnOn(timeout: timeoutSeconds);
+    } catch (e) {
+      _setError('Could not turn on Bluetooth: $e');
+      return false;
+    }
+
+    final on = isBluetoothOn;
+    if (!on) {
+      _setError('Bluetooth was not enabled. Please turn it on in Settings.');
+    }
+    return on;
+  }
+
   Future<void> startScan() async {
+    // If adapter is off, fall back to the off state so the UI can decide.
+    // In practice the UI calls ensureBluetoothOn() first, but guard anyway.
+    if (!isBluetoothOn) {
+      state = state.copyWith(
+        connectionState: BleConnectionState.error,
+        errorMessage:
+            'Bluetooth is turned off. Please enable it and try again.',
+      );
+      return;
+    }
+
     state = state.copyWith(connectionState: BleConnectionState.scanning);
     _retryCount = 0;
 
     try {
-      // adapterStateNow is the synchronous current state of the adapter.
-      if (FlutterBluePlus.adapterStateNow != BluetoothAdapterState.on) {
-        state = state.copyWith(
-          connectionState: BleConnectionState.error,
-          errorMessage: 'Bluetooth is turned off. Please enable it.',
-        );
-        return;
-      }
-
       await FlutterBluePlus.startScan(timeout: const Duration(seconds: 15));
 
       _scanSubscription = FlutterBluePlus.scanResults.listen((results) async {
@@ -303,6 +340,13 @@ class BleStateNotifier extends StateNotifier<BleState> {
 
   void clearError() {
     state = state.copyWith(errorMessage: null);
+  }
+
+  void _setError(String message) {
+    state = state.copyWith(
+      connectionState: BleConnectionState.error,
+      errorMessage: message,
+    );
   }
 
   // ── Frame parser ────────────────────────────────────────────────────────

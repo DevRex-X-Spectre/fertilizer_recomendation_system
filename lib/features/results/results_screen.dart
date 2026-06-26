@@ -1,6 +1,6 @@
 // lib/features/results/results_screen.dart
 // Shows sensor values, fertilizer recommendations, and suggestions.
-// This screen is pushed after a reading is saved and recommendation is computed.
+// Pushed after a BLE reading arrives and the user picks a field.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,70 +31,82 @@ class ResultsScreen extends ConsumerWidget {
     final result = engine.run();
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Test Results'),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      appBar: AppBar(title: const Text('Recommendations')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
-            // ── Sensor Values Card ──────────────────────────────────────────
-            _SectionTitle('Sensor Readings'),
+            // ── Header card: crop + reading ────────────────────────────
+            _HeaderCard(crop: crop, values: values),
+            const SizedBox(height: 24),
+
+            // ── Sensor Readings ────────────────────────────────────────
+            const _SectionHeader('Sensor Readings'),
             const SizedBox(height: 8),
             _SensorValuesCard(values: values),
             const SizedBox(height: 24),
 
-            // ── Fertilizer Recommendations ─────────────────────────────────
-            _SectionTitle('Fertilizer Recommendations'),
+            // ── Fertilizer Recommendations ─────────────────────────────
+            const _SectionHeader('Fertilizer'),
             const SizedBox(height: 8),
             if (result.fertilizers.isEmpty)
-              _NoRecommendationCard(
+              const _SoftCard(
                 icon: Icons.check_circle_outline,
-                message: 'All nutrient levels are adequate. '
-                    'No fertilizer application is recommended at this time.',
+                iconColor: AppTheme.statusAdequate,
+                title: 'No fertilizer needed',
+                body:
+                    'All nutrient levels look adequate. No fertilizer '
+                    'application is recommended at this time.',
               )
             else
               ...result.fertilizers.map(
-                (f) => _FertilizerCard(fertilizer: f),
+                (f) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _FertilizerCard(fertilizer: f),
+                ),
               ),
 
             const SizedBox(height: 24),
 
-            // ── Agronomic Suggestions ──────────────────────────────────────
-            _SectionTitle('Agronomic Suggestions'),
+            // ── Agronomic Suggestions ──────────────────────────────────
+            const _SectionHeader('Agronomic Advice'),
             const SizedBox(height: 8),
             if (result.suggestions.isEmpty)
-              _NoRecommendationCard(
+              const _SoftCard(
                 icon: Icons.thumb_up_outlined,
-                message: 'Soil conditions look good. '
-                    'No additional management actions are required.',
+                iconColor: AppTheme.statusAdequate,
+                title: 'All good',
+                body:
+                    'Soil conditions look healthy. No additional management '
+                    'actions are required.',
               )
             else
               ...result.suggestions.map(
-                (s) => _SuggestionCard(suggestion: s),
+                (s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _SuggestionCard(suggestion: s),
+                ),
               ),
 
-            const SizedBox(height: 24),
+            const SizedBox(height: 28),
 
-            // ── Save button ────────────────────────────────────────────────
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () => _saveAndExit(context, ref),
-                icon: const Icon(Icons.save),
-                label: const Text('Save to Field History'),
+            // ── Save button ────────────────────────────────────────────
+            FilledButton.icon(
+              onPressed: () => _saveAndExit(context, ref),
+              icon: const Icon(Icons.bookmark_added_outlined, size: 20),
+              label: const Text('Save to Field History'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(54),
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             SizedBox(
-              width: double.infinity,
-              child: OutlinedButton(
+              height: 48,
+              child: TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text('Discard'),
               ),
             ),
-            const SizedBox(height: 32),
           ],
         ),
       ),
@@ -104,7 +116,6 @@ class ResultsScreen extends ConsumerWidget {
   Future<void> _saveAndExit(BuildContext context, WidgetRef ref) async {
     final db = ref.read(databaseProvider);
 
-    // Measurement entries from SensorValues
     final entries = [
       MeasurementEntry(sensorType: SensorType.nitrogen,   value: values.nitrogen,   unit: 'ppm'),
       MeasurementEntry(sensorType: SensorType.phosphorus, value: values.phosphorus, unit: 'ppm'),
@@ -120,11 +131,85 @@ class ResultsScreen extends ConsumerWidget {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Reading saved to field history'),
-          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 2),
         ),
       );
-      Navigator.pop(context); // back to device screen
+      Navigator.pop(context);
     }
+  }
+}
+
+// ── Header card ───────────────────────────────────────────────────────────
+
+class _HeaderCard extends StatelessWidget {
+  final Crop crop;
+  final SensorValues values;
+
+  const _HeaderCard({required this.crop, required this.values});
+
+  @override
+  Widget build(BuildContext context) {
+    final isMaize = crop == Crop.maize;
+    final cropColor = isMaize ? AppTheme.primary : AppTheme.accent;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            cropColor,
+            Color.lerp(cropColor, Colors.black, 0.25)!,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(
+              isMaize ? Icons.agriculture : Icons.rice_bowl,
+              color: Colors.white,
+              size: 28,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isMaize ? 'Maize field' : 'Rice field',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 20,
+                    letterSpacing: -0.3,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Soil test complete',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -137,176 +222,252 @@ class _SensorValuesCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            _SensorRow(
-              label: 'Nitrogen (N)',
-              value: values.nitrogen,
-              unit: 'ppm',
-              status: values.nitrogen.nutrientColor(20, 40, 60),
-              deficientThreshold: 20,
-              adequateMin: 40,
-            ),
-            const Divider(height: 20),
-            _SensorRow(
-              label: 'Phosphorus (P)',
-              value: values.phosphorus,
-              unit: 'ppm',
-              status: values.phosphorus.nutrientColor(8, 15, 25),
-              deficientThreshold: 8,
-              adequateMin: 15,
-            ),
-            const Divider(height: 20),
-            _SensorRow(
-              label: 'Potassium (K)',
-              value: values.potassium,
-              unit: 'ppm',
-              status: values.potassium.nutrientColor(60, 120, 200),
-              deficientThreshold: 60,
-              adequateMin: 120,
-            ),
-            const Divider(height: 20),
-            _SensorRow(
-              label: 'pH',
-              value: values.ph,
-              unit: '',
-              status: _phColor(values.ph),
-              deficientThreshold: 5.5,
-              adequateMin: 6.0,
-            ),
-            const Divider(height: 20),
-            _SensorRow(
-              label: 'Salinity (EC)',
-              value: values.salinity,
-              unit: 'dS/m',
-              status: _salinityColor(values.salinity),
-              deficientThreshold: 0,
-              adequateMin: 0,
-            ),
-            const Divider(height: 20),
-            _SensorRow(
-              label: 'Moisture',
-              value: values.moisture,
-              unit: '%',
-              status: _moistureColor(values.moisture),
-              deficientThreshold: 0,
-              adequateMin: 0,
-            ),
-          ],
+    final rows = <Widget>[
+      _SensorRow(
+        icon: Icons.science_outlined,
+        label: 'Nitrogen (N)',
+        value: values.nitrogen.toStringAsFixed(1),
+        unit: 'ppm',
+        color: AppTheme.statusAdequate,
+        status: values.nitrogen.nutrientColor(20, 40, 60),
+        statusLabel: _nutrientStatus(
+          value: values.nitrogen,
+          low: 20,
+          med: 40,
+          high: 60,
+          labels: const ['Deficient', 'Low', 'Adequate', 'Excess'],
         ),
       ),
+      const _RowDivider(),
+      _SensorRow(
+        icon: Icons.grain,
+        label: 'Phosphorus (P)',
+        value: values.phosphorus.toStringAsFixed(1),
+        unit: 'ppm',
+        color: AppTheme.accent,
+        status: values.phosphorus.nutrientColor(8, 15, 25),
+        statusLabel: _nutrientStatus(
+          value: values.phosphorus,
+          low: 8,
+          med: 15,
+          high: 25,
+          labels: const ['Deficient', 'Low', 'Adequate', 'Excess'],
+        ),
+      ),
+      const _RowDivider(),
+      _SensorRow(
+        icon: Icons.eco,
+        label: 'Potassium (K)',
+        value: values.potassium.toStringAsFixed(1),
+        unit: 'ppm',
+        color: AppTheme.primary,
+        status: values.potassium.nutrientColor(60, 120, 200),
+        statusLabel: _nutrientStatus(
+          value: values.potassium,
+          low: 60,
+          med: 120,
+          high: 200,
+          labels: const ['Deficient', 'Low', 'Adequate', 'Excess'],
+        ),
+      ),
+      const _RowDivider(),
+      _SensorRow(
+        icon: Icons.balance,
+        label: 'pH',
+        value: values.ph.toStringAsFixed(1),
+        unit: '',
+        color: const Color(0xFF7C3AED),
+        status: _phColor(values.ph),
+        statusLabel: _phLabel(values.ph),
+      ),
+      const _RowDivider(),
+      _SensorRow(
+        icon: Icons.waves,
+        label: 'Salinity (EC)',
+        value: values.salinity.toStringAsFixed(2),
+        unit: 'dS/m',
+        color: const Color(0xFF0891B2),
+        status: _salinityColor(values.salinity),
+        statusLabel: _salinityLabel(values.salinity),
+      ),
+      const _RowDivider(),
+      _SensorRow(
+        icon: Icons.water_drop_outlined,
+        label: 'Moisture',
+        value: values.moisture.toStringAsFixed(0),
+        unit: '%',
+        color: const Color(0xFF2563EB),
+        status: _moistureColor(values.moisture),
+        statusLabel: _moistureLabel(values.moisture),
+      ),
+    ];
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceTint,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.outlineVariant),
+      ),
+      child: Column(children: rows),
     );
   }
 
+  String _nutrientStatus({
+    required double value,
+    required double low,
+    required double med,
+    required double high,
+    required List<String> labels,
+  }) {
+    if (value < low) return labels[0];
+    if (value < med) return labels[1];
+    if (value <= high) return labels[2];
+    return labels[3];
+  }
+
   Color _phColor(double ph) {
-    if (ph < 5.5) return Colors.red;
-    if (ph < 6.0) return Colors.amber;
-    if (ph <= 7.0) return Colors.green;
-    if (ph <= 7.5) return Colors.amber;
-    return Colors.blue;
+    if (ph < 5.5) return AppTheme.statusDeficient;
+    if (ph < 6.0) return AppTheme.statusLow;
+    if (ph <= 7.0) return AppTheme.statusAdequate;
+    return AppTheme.statusExcess;
+  }
+
+  String _phLabel(double ph) {
+    if (ph < 5.5) return 'Acidic';
+    if (ph <= 7.0) return 'Optimal';
+    return 'Alkaline';
   }
 
   Color _salinityColor(double ec) {
-    if (ec < 2) return Colors.green;
-    if (ec < 4) return Colors.amber;
-    return Colors.red;
+    if (ec < 2) return AppTheme.statusAdequate;
+    if (ec < 4) return AppTheme.statusLow;
+    return AppTheme.statusDeficient;
+  }
+
+  String _salinityLabel(double ec) {
+    if (ec < 2) return 'Normal';
+    if (ec < 4) return 'Slight';
+    return 'High';
   }
 
   Color _moistureColor(double m) {
-    if (m < 20) return Colors.red;
-    if (m < 40) return Colors.amber;
-    if (m <= 70) return Colors.green;
-    return Colors.blue;
+    if (m < 20) return AppTheme.statusDeficient;
+    if (m <= 70) return AppTheme.statusAdequate;
+    return AppTheme.statusExcess;
+  }
+
+  String _moistureLabel(double m) {
+    if (m < 20) return 'Dry';
+    if (m <= 70) return 'Adequate';
+    return 'Saturated';
+  }
+}
+
+class _RowDivider extends StatelessWidget {
+  const _RowDivider();
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 16),
+      child: Divider(height: 1, thickness: 1, color: AppTheme.outlineVariant),
+    );
   }
 }
 
 class _SensorRow extends StatelessWidget {
+  final IconData icon;
   final String label;
-  final double value;
+  final String value;
   final String unit;
+  final Color color;
   final Color status;
-  final double deficientThreshold;
-  final double adequateMin;
+  final String statusLabel;
 
   const _SensorRow({
+    required this.icon,
     required this.label,
     required this.value,
     required this.unit,
+    required this.color,
     required this.status,
-    required this.deficientThreshold,
-    required this.adequateMin,
+    required this.statusLabel,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 12,
-          height: 12,
-          decoration: BoxDecoration(
-            color: status,
-            shape: BoxShape.circle,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: color, size: 18),
           ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: const TextStyle(fontSize: 13),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                '${value.toStringAsFixed(1)} $unit',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-            ],
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: status.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            _statusLabel,
-            style: TextStyle(
-              color: status,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF6B7168),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(
+                      value,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
+                      ),
+                    ),
+                    if (unit.isNotEmpty) ...[
+                      const SizedBox(width: 3),
+                      Text(
+                        unit,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF6B7168),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
             ),
           ),
-        ),
-      ],
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: status.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(99),
+            ),
+            child: Text(
+              statusLabel,
+              style: TextStyle(
+                color: status,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
-  }
-
-  String get _statusLabel {
-    if (label.contains('pH')) {
-      if (value < 5.5) return 'Acidic';
-      if (value <= 7.0) return 'Optimal';
-      return 'Alkaline';
-    }
-    if (label.contains('Salinity')) {
-      if (value < 2) return 'Normal';
-      if (value < 4) return 'Slight';
-      return 'High';
-    }
-    if (label.contains('Moisture')) {
-      if (value < 20) return 'Dry';
-      if (value <= 70) return 'Adequate';
-      return 'Saturated';
-    }
-    if (value < deficientThreshold) return 'Deficient';
-    if (value < adequateMin) return 'Low';
-    return 'Adequate';
   }
 }
 
@@ -319,70 +480,85 @@ class _FertilizerCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceTint,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.accent.withValues(alpha: 0.30)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: AppTheme.accent.withValues(alpha: 0.08),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+            ),
+            child: Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    fertilizer.npk,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.primary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
+                Icon(Icons.science, color: AppTheme.accent, size: 18),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     fertilizer.name,
                     style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accent,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    fertilizer.npk,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.amber.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.amber.shade200),
-              ),
-              child: Text(
-                'Apply ${fertilizer.quantityLabel}',
-                style: TextStyle(
-                  color: Colors.amber.shade900,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 15,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.scale_outlined, size: 18, color: Color(0xFF6B7168)),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Apply ${fertilizer.quantityLabel}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                        color: AppTheme.accent,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
+                const SizedBox(height: 10),
+                Text(
+                  fertilizer.applicationNote,
+                  style: const TextStyle(
+                    color: Color(0xFF4B554D),
+                    fontSize: 13,
+                    height: 1.5,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            Text(
-              fertilizer.applicationNote,
-              style: TextStyle(
-                color: Colors.grey[700],
-                fontSize: 13,
-                height: 1.4,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -397,90 +573,133 @@ class _SuggestionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      color: Colors.blue.shade50,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEFF6FF),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFBFDBFE)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: const Color(0xFF2563EB).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.lightbulb_outline,
+              size: 18,
+              color: Color(0xFF1D4ED8),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.lightbulb_outline, color: Colors.blue.shade700, size: 20),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    suggestion.title,
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                      color: Colors.blue.shade900,
-                    ),
+                Text(
+                  suggestion.title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                    color: Color(0xFF1E3A8A),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  suggestion.body,
+                  style: const TextStyle(
+                    color: Color(0xFF1E40AF),
+                    fontSize: 13,
+                    height: 1.5,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            Text(
-              suggestion.body,
-              style: TextStyle(
-                color: Colors.blue.shade800,
-                fontSize: 13,
-                height: 1.4,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
-// ── Empty state ───────────────────────────────────────────────────────────────
+// ── Soft card (used for "no recommendations" empty states) ─────────────────
 
-class _NoRecommendationCard extends StatelessWidget {
+class _SoftCard extends StatelessWidget {
   final IconData icon;
-  final String message;
+  final Color iconColor;
+  final String title;
+  final String body;
 
-  const _NoRecommendationCard({required this.icon, required this.message});
+  const _SoftCard({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.body,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      color: Colors.green.shade50,
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Row(
-          children: [
-            Icon(icon, color: Colors.green, size: 28),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Text(
-                message,
-                style: TextStyle(color: Colors.green.shade900, height: 1.4),
-              ),
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: iconColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: iconColor.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: iconColor, size: 26),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: iconColor,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  body,
+                  style: TextStyle(
+                    color: iconColor,
+                    fontSize: 13,
+                    height: 1.45,
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
-// ── Section title ─────────────────────────────────────────────────────────────
+// ── Section header ───────────────────────────────────────────────────────────
 
-class _SectionTitle extends StatelessWidget {
+class _SectionHeader extends StatelessWidget {
   final String text;
-
-  const _SectionTitle(this.text);
+  const _SectionHeader(this.text);
 
   @override
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.bold,
+      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: const Color(0xFF4B554D),
+            letterSpacing: 0.2,
           ),
     );
   }
