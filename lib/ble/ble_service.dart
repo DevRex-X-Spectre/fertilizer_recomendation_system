@@ -226,30 +226,29 @@ class BleStateNotifier extends StateNotifier<BleState> {
   /// Request the runtime permissions Android requires to scan + connect
   /// over BLE. On Android 12+ these are BLUETOOTH_SCAN and
   /// BLUETOOTH_CONNECT (both "runtime" — not auto-granted on install).
-  /// On older Android we also ask for fine location because scanning
-  /// returns the device's coarse location.
+  /// On older Android we also ask for fine location because BLE scanning
+  /// requires it.
   ///
-  /// Returns true when all required permissions are granted. On iOS the
-  /// permission_handler platform impl is a no-op for these (iOS only
-  /// requires the NSBluetoothAlwaysUsageDescription in Info.plist, which
-  /// flutter_blue_plus handles when its first BLE call is made).
+  /// Returns true when all required permissions are granted.
   Future<bool> requestPermissions() async {
-    final results = await [
+    // On Android 12+ BLUETOOTH_SCAN implies location capability,
+    // so no separate location permission is needed for scanning.
+    // On Android 11 and below, location is required for BLE scanning.
+    final permissions = <Permission>[
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
       Permission.locationWhenInUse,
-    ].request();
+    ];
+
+    final results = await permissions.request();
 
     final scanGranted = results[Permission.bluetoothScan]?.isGranted ?? true;
     final connectGranted = results[Permission.bluetoothConnect]?.isGranted ?? true;
-    final locationGranted = results[Permission.locationWhenInUse]?.isGranted ?? true;
 
-    if (!scanGranted || !connectGranted || !locationGranted) {
-      // Build a specific message so the user knows exactly what to fix.
+    if (!scanGranted || !connectGranted) {
       final missing = <String>[];
       if (!scanGranted) missing.add('Nearby devices (Bluetooth scan)');
       if (!connectGranted) missing.add('Bluetooth connection');
-      if (!locationGranted) missing.add('Location (needed for BLE scanning)');
       _setError(
         'SoilSense needs these permissions to find your device:\n'
         '• ${missing.join('\n• ')}\n\n'
@@ -260,30 +259,18 @@ class BleStateNotifier extends StateNotifier<BleState> {
     return true;
   }
 
-  /// If Bluetooth is off, request the user to turn it on. On Android this
-  /// shows the system "Allow Bluetooth" prompt. On iOS this opens the
-  /// permission prompt. Returns true if Bluetooth is on after the call,
-  /// false if it couldn't be enabled (denied, unsupported, timeout).
-  Future<bool> ensureBluetoothOn({int timeoutSeconds = 30}) async {
-    if (isBluetoothOn) return true;
-
-    if (state.bluetoothUnavailable) {
-      _setError('This device does not support Bluetooth.');
-      return false;
-    }
-
-    try {
-      await FlutterBluePlus.turnOn(timeout: timeoutSeconds);
-    } catch (e) {
-      _setError('Could not turn on Bluetooth: $e');
-      return false;
-    }
-
-    final on = isBluetoothOn;
-    if (!on) {
-      _setError('Bluetooth was not enabled. Please turn it on in Settings.');
-    }
-    return on;
+  /// Open the system Bluetooth settings so the user can toggle it on
+  /// manually. On Android this is the BLUETOOTH_SETTINGS screen; the user
+  /// toggles the switch there, then comes back to the app. The
+  /// adapterState stream will fire when BT actually turns on, which
+  /// rebuilds the UI reactively.
+  ///
+  /// Note: we deliberately do NOT use FlutterBluePlus.turnOn() here —
+  /// on Android 10+ it shows an ACTION_REQUEST_ENABLE system dialog,
+  /// but many devices have it disabled. Opening the settings page is
+  /// the most reliable path.
+  Future<void> openBluetoothSettings() async {
+    await FlutterBluePlus.turnOn();
   }
 
   /// Begin scanning. Devices are collected into state.discoveredDevices

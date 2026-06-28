@@ -71,17 +71,22 @@ class _IdleView extends ConsumerWidget {
   Future<void> _onScanPressed(BuildContext context, WidgetRef ref) async {
     final notifier = ref.read(bleStateProvider.notifier);
 
-    // ── Step 1: make sure Bluetooth is on ────────────────────────────
+    // ── Step 1: if Bluetooth is off, open system settings so the user can
+    // toggle it. On Android 10+ apps cannot toggle the radio directly.
     if (!notifier.isBluetoothOn) {
-      final shouldTurnOn = await _showTurnOnDialog(context);
-      if (shouldTurnOn != true) return;
+      final shouldOpen = await _showTurnOnDialog(context);
+      if (shouldOpen != true) return;
 
-      final ok = await notifier.ensureBluetoothOn();
-      if (!ok) return;
+      await notifier.openBluetoothSettings();
+      // Do NOT proceed immediately — the user needs to come back after
+      // enabling Bluetooth. The UI will auto-refresh because we watch
+      // BleState (which subscribes to the adapter stream).
+      return;
     }
 
-    // ── Step 2: kick off the scan (this also requests runtime BT
-    // permissions on Android 12+) ─────────────────────────────────────
+    // ── Step 2: Bluetooth is on — kick off the scan. This also requests
+    // runtime permissions on Android 12+, which may show its own system
+    // dialog prompting the user to grant scan + connect access.
     await notifier.startScan();
   }
 
@@ -172,8 +177,9 @@ class _IdleView extends ConsumerWidget {
         icon: Icon(Icons.bluetooth_disabled, size: 40, color: AppTheme.accent),
         title: const Text('Bluetooth is off'),
         content: const Text(
-          'SoilSense needs Bluetooth to find your soil-testing hardware. '
-          'Turn it on now?',
+          'SoilSense needs Bluetooth to find your soil-testing hardware.\n\n'
+          'Tap "Open Settings" to go to your device settings, '
+          'turn Bluetooth on, then come back here and tap Scan again.',
         ),
         actions: [
           TextButton(
@@ -182,8 +188,8 @@ class _IdleView extends ConsumerWidget {
           ),
           FilledButton.icon(
             onPressed: () => Navigator.pop(ctx, true),
-            icon: const Icon(Icons.bluetooth, size: 18),
-            label: const Text('Turn on'),
+            icon: const Icon(Icons.settings, size: 18),
+            label: const Text('Open Settings'),
           ),
         ],
       ),
