@@ -17,28 +17,57 @@ import '../../data/providers.dart';
 import '../results/results_screen.dart';
 import 'device_details_screen.dart';
 
-class DeviceScreen extends ConsumerWidget {
+class DeviceScreen extends ConsumerStatefulWidget {
   const DeviceScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DeviceScreen> createState() => _DeviceScreenState();
+}
+
+class _DeviceScreenState extends ConsumerState<DeviceScreen> {
+  @override
+  void dispose() {
+    // Stop any active scan when the user leaves this tab — whether they
+    // switch tabs, push another route, or pop the whole app. The notifier
+    // lives for the app's lifetime, but we don't want it holding an
+    // active BT radio for an invisible screen.
+    Future.microtask(
+      () => ref.read(bleStateProvider.notifier).stopScan(),
+    );
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final bleState = ref.watch(bleStateProvider);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Device')),
-      body: _buildBody(context, ref, bleState),
+    return PopScope(
+      // Intercept the system back button while scanning so the user gets
+      // a clean stop instead of the screen disappearing mid-scan.
+      canPop: bleState.connectionState != BleConnectionState.scanning,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        ref.read(bleStateProvider.notifier).stopScan();
+        // Re-issue the pop after stopping so navigation completes.
+        Navigator.of(context).maybePop();
+      },
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Device')),
+        body: _buildBody(context, bleState),
+      ),
     );
   }
 
-  Widget _buildBody(BuildContext context, WidgetRef ref, BleState state) {
+  Widget _buildBody(BuildContext context, BleState state) {
     switch (state.connectionState) {
       case BleConnectionState.idle:
-        return _IdleView(ref: ref);
+        return _IdleView();
       case BleConnectionState.scanning:
         return _ScanningView(
           devices: state.discoveredDevices,
           onDeviceTap: (d) => _openDetails(context, d),
           onRescan: () => ref.read(bleStateProvider.notifier).startScan(),
+          onStop: () => ref.read(bleStateProvider.notifier).stopScan(),
         );
       case BleConnectionState.connecting:
         return const _ConnectingView();
@@ -48,7 +77,7 @@ class DeviceScreen extends ConsumerWidget {
       case BleConnectionState.reading:
         return _ConnectedView();
       case BleConnectionState.error:
-        return _ErrorView(state: state, ref: ref);
+        return _ErrorView(state: state);
     }
   }
 
@@ -64,9 +93,7 @@ class DeviceScreen extends ConsumerWidget {
 // ── Idle ────────────────────────────────────────────────────────────────────
 
 class _IdleView extends ConsumerWidget {
-  final WidgetRef ref;
-
-  const _IdleView({required this.ref});
+  const _IdleView();
 
   Future<void> _onScanPressed(BuildContext context, WidgetRef ref) async {
     final notifier = ref.read(bleStateProvider.notifier);
@@ -242,17 +269,20 @@ class _ScanningView extends StatelessWidget {
   final List<DiscoveredDevice> devices;
   final ValueChanged<DiscoveredDevice> onDeviceTap;
   final VoidCallback onRescan;
+  final VoidCallback onStop;
 
   const _ScanningView({
     required this.devices,
     required this.onDeviceTap,
     required this.onRescan,
+    required this.onStop,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final pings = devices.map(RadarPing.fromDevice).toList();
+    final scanning = true;
 
     return SafeArea(
       child: Column(
@@ -291,6 +321,8 @@ class _ScanningView extends StatelessWidget {
                   soilSenseCount:
                       devices.where((d) => d.isSoilSense).length,
                   onRescan: onRescan,
+                  onStop: onStop,
+                  scanning: scanning,
                 ),
                 const SizedBox(height: 8),
                 Text(
@@ -333,12 +365,28 @@ class _ScanStatusRow extends StatelessWidget {
   final int count;
   final int soilSenseCount;
   final VoidCallback onRescan;
+  final VoidCallback onStop;
+  final bool scanning;
 
   const _ScanStatusRow({
     required this.count,
     required this.soilSenseCount,
     required this.onRescan,
+    required this.onStop,
+    required this.scanning,
   });
+
+  String _statusText() {
+    if (!scanning) {
+      return count == 0
+          ? 'Scan stopped · no devices found'
+          : 'Scan stopped · $count device${count == 1 ? '' : 's'} · '
+              '$soilSenseCount SoilSense';
+    }
+    if (count == 0) return 'Scanning…';
+    return '$count device${count == 1 ? '' : 's'} found · '
+        '$soilSenseCount SoilSense';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -354,20 +402,22 @@ class _ScanStatusRow extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(
-                  strokeWidth: 1.8,
-                  color: AppTheme.primary,
+              if (scanning) ...[
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.8,
+                    color: AppTheme.primary,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
+                const SizedBox(width: 8),
+              ] else ...[
+                const Icon(Icons.check_circle, size: 14, color: AppTheme.primary),
+                const SizedBox(width: 6),
+              ],
               Text(
-                count == 0
-                    ? 'Scanning…'
-                    : '$count device${count == 1 ? '' : 's'} found'
-                        '$soilSenseCount SoilSense',
+                _statusText(),
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -378,17 +428,31 @@ class _ScanStatusRow extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        TextButton.icon(
-          onPressed: onRescan,
-          icon: const Icon(Icons.refresh, size: 16),
-          label: const Text('Rescan'),
-          style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            visualDensity: VisualDensity.compact,
+        if (scanning)
+          TextButton.icon(
+            onPressed: onStop,
+            icon: const Icon(Icons.stop_circle_outlined, size: 16),
+            label: const Text('Stop'),
+            style: TextButton.styleFrom(
+              foregroundColor: AppTheme.accent,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+            ),
+          )
+        else
+          TextButton.icon(
+            onPressed: onRescan,
+            icon: const Icon(Icons.refresh, size: 16),
+            label: const Text('Rescan'),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+            ),
           ),
-        ),
       ],
     );
   }
@@ -997,9 +1061,8 @@ class _SensorTile extends StatelessWidget {
 
 class _ErrorView extends ConsumerWidget {
   final BleState state;
-  final WidgetRef ref;
 
-  const _ErrorView({required this.state, required this.ref});
+  const _ErrorView({required this.state});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {

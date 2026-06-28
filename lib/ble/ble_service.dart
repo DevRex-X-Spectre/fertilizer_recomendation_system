@@ -289,6 +289,10 @@ class BleStateNotifier extends StateNotifier<BleState> {
       return;
     }
 
+    // Always cancel any prior scan first so we don't leak subscriptions
+    // or have two streams racing into state.
+    await _stopScanSilently();
+
     // Reset state for a fresh scan.
     state = state.copyWith(
       connectionState: BleConnectionState.scanning,
@@ -297,23 +301,59 @@ class BleStateNotifier extends StateNotifier<BleState> {
     );
     _retryCount = 0;
 
+    // IMPORTANT: subscribe to scanResults BEFORE calling startScan.
+    // FlutterBluePlus buffers results into a single stream that's emitted
+    // incrementally, but if we await startScan before subscribing we miss
+    // the burst of advertisements that arrive during the start handshake.
+    _scanSubscription = FlutterBluePlus.scanResults.listen(
+      _onScanResults,
+      onError: (Object e) {
+        _setError('Scan error: $e');
+      },
+    );
+
     try {
       await FlutterBluePlus.startScan(timeout: timeout);
-
-      _scanSubscription = FlutterBluePlus.scanResults.listen(_onScanResults);
-
-      _scanTimeoutTimer?.cancel();
-      _scanTimeoutTimer = Timer(timeout, () {
-        if (state.connectionState != BleConnectionState.scanning) return;
-        // Stop collecting results; let the UI show whatever was found.
-        _scanSubscription?.cancel();
-        FlutterBluePlus.stopScan();
-        // Stay in "scanning" state so the user can keep interacting with
-        // the radar and pick a device, OR tap "Scan again" to restart.
-        // We just no longer receive new results.
-      });
     } catch (e) {
       _setError('Scan failed: $e');
+      _scanSubscription?.cancel();
+      _scanSubscription = null;
+      return;
+    }
+
+    _scanTimeoutTimer?.cancel();
+    _scanTimeoutTimer = Timer(timeout, () {
+      // Auto-stop after the timeout: keep whatever devices we already
+      // collected, but move out of "scanning" so the UI shows a Stop
+      // button affordance and the user knows new results won't arrive.
+      if (state.connectionState != BleConnectionState.scanning) return;
+      _scanSubscription?.cancel();
+      _scanSubscription = null;
+      FlutterBluePlus.stopScan();
+      state = state.copyWith(
+        connectionState: BleConnectionState.idle,
+        errorMessage:
+            state.discoveredDevices.isEmpty
+                ? 'No devices found. Make sure your SoilSense probe is on '
+                    'and nearby, then try again.'
+                : null,
+      );
+    });
+  }
+
+  /// Internal helper — cancels subscriptions/timer without changing state.
+  Future<void> _stopScanSilently() async {
+    _scanSubscription?.cancel();
+    _scanSubscription = null;
+    _scanTimeoutTimer?.cancel();
+    _scanTimeoutTimer = null;
+    try {
+      if (FlutterBluePlus.isScanningNow) {
+        await FlutterBluePlus.stopScan();
+      }
+    } catch (_) {
+      // Best-effort. Even if stopScan throws, we've already cancelled
+      // our subscription so no more results will reach state.
     }
   }
 
@@ -553,13 +593,16 @@ class BleStateNotifier extends StateNotifier<BleState> {
   }
 
   /// Stop scanning but keep whatever devices have been discovered so far.
+  /// Safe to call even if no scan is in progress.
   Future<void> stopScan() async {
-    _scanSubscription?.cancel();
-    _scanTimeoutTimer?.cancel();
-    await FlutterBluePlus.stopScan();
-    // Move out of scanning state but keep the discovered list.
+    await _stopScanSilently();
+    // Move out of scanning state but keep the discovered list so the
+    // user can still tap a previously-seen device.
     if (state.connectionState == BleConnectionState.scanning) {
-      state = state.copyWith(connectionState: BleConnectionState.idle);
+      state = state.copyWith(
+        connectionState: BleConnectionState.idle,
+        errorMessage: null,
+      );
     }
   }
 
