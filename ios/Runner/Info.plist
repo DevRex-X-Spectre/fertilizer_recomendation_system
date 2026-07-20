@@ -70,5 +70,7 @@
 	<string>SoilSense uses Bluetooth to connect to your soil-testing hardware device.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>SoilSense uses Bluetooth to read sensor data from your soil-testing device.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SoilSense uses your location to save the precise position of your farm field.</string>
 </dict>
 </plist>

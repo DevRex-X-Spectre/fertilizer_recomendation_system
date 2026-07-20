@@ -10,6 +10,7 @@ import '../../core/theme.dart';
 import '../../data/database.dart';
 import '../../data/models.dart';
 import '../../data/providers.dart';
+import '../results/past_test_details_screen.dart';
 
 class HistoryScreen extends ConsumerWidget {
   const HistoryScreen({super.key});
@@ -73,19 +74,16 @@ class _EmptyHistoryView extends StatelessWidget {
             const SizedBox(height: 24),
             Text(
               'No history yet',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             Text(
               'Connect your SoilSense device and run a test '
               'to start building your field history.',
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Color(0xFF6B7168),
-                height: 1.5,
-              ),
+              style: const TextStyle(color: Color(0xFF6B7168), height: 1.5),
             ),
           ],
         ),
@@ -154,8 +152,12 @@ class _FieldHistoryCard extends ConsumerWidget {
           ),
           children: [
             _TrendChart(fieldId: field.id),
-            const Divider(height: 1, thickness: 1, color: AppTheme.outlineVariant),
-            _ReadingList(fieldId: field.id, db: db),
+            const Divider(
+              height: 1,
+              thickness: 1,
+              color: AppTheme.outlineVariant,
+            ),
+            _ReadingList(field: field, db: db),
           ],
         ),
       ),
@@ -164,17 +166,17 @@ class _FieldHistoryCard extends ConsumerWidget {
 }
 
 class _ReadingList extends StatelessWidget {
-  final int fieldId;
+  final Field field;
   final AppDatabase db;
 
-  const _ReadingList({required this.fieldId, required this.db});
+  const _ReadingList({required this.field, required this.db});
 
   @override
   Widget build(BuildContext context) {
     final dateFormat = DateFormat('MMM d • h:mm a');
 
     return StreamBuilder<List<TestReading>>(
-      stream: db.watchReadingsForField(fieldId),
+      stream: db.watchReadingsForField(field.id),
       builder: (context, snap) {
         final readings = snap.data ?? [];
 
@@ -184,10 +186,7 @@ class _ReadingList extends StatelessWidget {
             child: Center(
               child: Text(
                 'No readings yet. Run a test from the Device tab.',
-                style: TextStyle(
-                  color: Color(0xFF6B7168),
-                  fontSize: 13,
-                ),
+                style: TextStyle(color: Color(0xFF6B7168), fontSize: 13),
               ),
             ),
           );
@@ -204,8 +203,19 @@ class _ReadingList extends StatelessWidget {
                 return Column(
                   children: [
                     ListTile(
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 12),
+                      onTap: ms.isEmpty
+                          ? null
+                          : () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => PastTestDetailsScreen(
+                                  field: field,
+                                  reading: r,
+                                ),
+                              ),
+                            ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                      ),
                       dense: true,
                       leading: Container(
                         width: 30,
@@ -434,7 +444,11 @@ class _TrendChart extends ConsumerWidget {
                     ),
                     borderData: FlBorderData(show: false),
                     lineBarsData: [
-                      _makeLine(entries, (e) => _n(e), AppTheme.statusDeficient),
+                      _makeLine(
+                        entries,
+                        (e) => _n(e),
+                        AppTheme.statusDeficient,
+                      ),
                       _makeLine(entries, (e) => _p(e), AppTheme.accent),
                       _makeLine(entries, (e) => _k(e), AppTheme.primary),
                     ],
@@ -514,11 +528,23 @@ class _TrendChart extends ConsumerWidget {
   }
 
   double _n(FieldHistoryEntry e) =>
-      e.measurements.where((m) => m.sensorType == SensorType.nitrogen).firstOrNull?.value ?? 0;
+      e.measurements
+          .where((m) => m.sensorType == SensorType.nitrogen)
+          .firstOrNull
+          ?.value ??
+      0;
   double _p(FieldHistoryEntry e) =>
-      e.measurements.where((m) => m.sensorType == SensorType.phosphorus).firstOrNull?.value ?? 0;
+      e.measurements
+          .where((m) => m.sensorType == SensorType.phosphorus)
+          .firstOrNull
+          ?.value ??
+      0;
   double _k(FieldHistoryEntry e) =>
-      e.measurements.where((m) => m.sensorType == SensorType.potassium).firstOrNull?.value ?? 0;
+      e.measurements
+          .where((m) => m.sensorType == SensorType.potassium)
+          .firstOrNull
+          ?.value ??
+      0;
 }
 
 class _LegendDot extends StatelessWidget {

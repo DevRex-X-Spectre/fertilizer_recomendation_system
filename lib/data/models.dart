@@ -62,10 +62,7 @@ class SensorMeasurement {
   final SensorType type;
   final double value;
 
-  const SensorMeasurement({
-    required this.type,
-    required this.value,
-  });
+  const SensorMeasurement({required this.type, required this.value});
 
   String get displayValue {
     if (type == SensorType.ph) {
@@ -77,12 +74,13 @@ class SensorMeasurement {
 
 /// All sensor values from one soil test reading.
 class SensorValues {
-  final double nitrogen;   // ppm
+  final double nitrogen; // ppm
   final double phosphorus; // ppm
-  final double potassium;  // ppm
+  final double potassium; // ppm
   final double ph;
-  final double salinity;   // dS/m
-  final double moisture;   // %
+  final double salinity; // dS/m
+  final double moisture; // %
+  final bool moistureAvailable;
 
   const SensorValues({
     required this.nitrogen,
@@ -91,6 +89,7 @@ class SensorValues {
     required this.ph,
     required this.salinity,
     required this.moisture,
+    this.moistureAvailable = true,
   });
 
   SensorMeasurement operator [](SensorType type) {
@@ -117,6 +116,7 @@ class SensorValues {
     ph: 0,
     salinity: 0,
     moisture: 0,
+    moistureAvailable: false,
   );
 }
 
@@ -124,17 +124,15 @@ class SensorValues {
 class FertilizerRecommendation {
   final String name;
   final String npk;
-  final double quantityKgHa;
+  final String reason;
   final String applicationNote;
 
   const FertilizerRecommendation({
     required this.name,
     required this.npk,
-    required this.quantityKgHa,
+    required this.reason,
     required this.applicationNote,
   });
-
-  String get quantityLabel => '${quantityKgHa.toStringAsFixed(0)} kg/ha';
 }
 
 /// One general agronomic suggestion (not fertilizer-specific).
@@ -142,22 +140,49 @@ class AgronomicSuggestion {
   final String title;
   final String body;
 
-  const AgronomicSuggestion({
-    required this.title,
-    required this.body,
-  });
+  const AgronomicSuggestion({required this.title, required this.body});
 }
 
 /// Full recommendation result returned by the engine.
 class RecommendationResult {
   final List<FertilizerRecommendation> fertilizers;
   final List<AgronomicSuggestion> suggestions;
+  final List<String> warnings;
+  final double confidence;
+  final bool recommendationAllowed;
 
   const RecommendationResult({
     required this.fertilizers,
     required this.suggestions,
+    this.warnings = const [],
+    this.confidence = 0.5,
+    this.recommendationAllowed = true,
   });
 
   bool get hasRecommendations =>
       fertilizers.isNotEmpty || suggestions.isNotEmpty;
+}
+
+enum AgroEcologicalZone {
+  sudanSavanna,
+  northernGuineaSavanna,
+  southernGuineaSavanna,
+  derivedSavanna,
+  humidForest,
+}
+
+enum RiceEcology { upland, rainfedLowland, irrigatedLowland }
+
+enum ReadingReliability { unverified, stableSinglePoint, compositeFieldSample }
+
+class RecommendationContext {
+  final AgroEcologicalZone zone;
+  final RiceEcology riceEcology;
+  final ReadingReliability readingReliability;
+
+  const RecommendationContext({
+    this.zone = AgroEcologicalZone.northernGuineaSavanna,
+    this.riceEcology = RiceEcology.rainfedLowland,
+    this.readingReliability = ReadingReliability.unverified,
+  });
 }

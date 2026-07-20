@@ -16,6 +16,7 @@ class ResultsScreen extends ConsumerWidget {
   final int fieldId;
   final Crop crop;
   final SensorValues values;
+  final bool readOnly;
 
   const ResultsScreen({
     super.key,
@@ -23,21 +24,50 @@ class ResultsScreen extends ConsumerWidget {
     required this.fieldId,
     required this.crop,
     required this.values,
+    this.readOnly = false,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final engine = RecommendationEngine(crop: crop, values: values);
+    final engine = RecommendationEngine(
+      crop: crop,
+      values: values,
+      context: const RecommendationContext(
+        readingReliability: ReadingReliability.stableSinglePoint,
+      ),
+    );
     final result = engine.run();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Recommendations')),
+      appBar: AppBar(
+        title: Text(readOnly ? 'Soil test details' : 'Recommendations'),
+      ),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
             // ── Header card: crop + reading ────────────────────────────
             _HeaderCard(crop: crop, values: values),
+            const SizedBox(height: 12),
+            _RecommendationStatus(result: result),
+            if (result.warnings.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              ...result.warnings.map(
+                (warning) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _SoftCard(
+                    icon: Icons.info_outline,
+                    iconColor: result.recommendationAllowed
+                        ? AppTheme.statusLow
+                        : AppTheme.error,
+                    title: result.recommendationAllowed
+                        ? 'Important limitation'
+                        : 'Test again before applying fertilizer',
+                    body: warning,
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
 
             // ── Sensor Readings ────────────────────────────────────────
@@ -49,7 +79,15 @@ class ResultsScreen extends ConsumerWidget {
             // ── Fertilizer Recommendations ─────────────────────────────
             const _SectionHeader('Fertilizer'),
             const SizedBox(height: 8),
-            if (result.fertilizers.isEmpty)
+            if (!result.recommendationAllowed)
+              const _SoftCard(
+                icon: Icons.restart_alt,
+                iconColor: AppTheme.error,
+                title: 'Recommendation withheld',
+                body:
+                    'SoilSense did not produce a fertilizer rate because the sensor data failed its safety checks.',
+              )
+            else if (result.fertilizers.isEmpty)
               const _SoftCard(
                 icon: Icons.check_circle_outline,
                 iconColor: AppTheme.statusAdequate,
@@ -91,22 +129,33 @@ class ResultsScreen extends ConsumerWidget {
             const SizedBox(height: 28),
 
             // ── Save button ────────────────────────────────────────────
-            FilledButton.icon(
-              onPressed: () => _saveAndExit(context, ref),
-              icon: const Icon(Icons.bookmark_added_outlined, size: 20),
-              label: const Text('Save to Field History'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(54),
+            if (!readOnly)
+              FilledButton.icon(
+                onPressed: () => _saveAndExit(context, ref),
+                icon: const Icon(Icons.bookmark_added_outlined, size: 20),
+                label: const Text('Save to Field History'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(54),
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 48,
-              child: TextButton(
+            if (!readOnly) const SizedBox(height: 8),
+            if (!readOnly)
+              SizedBox(
+                height: 48,
+                child: TextButton(
+                  onPressed: () async {
+                    await ref.read(databaseProvider).deleteReading(readingId);
+                    if (context.mounted) Navigator.pop(context);
+                  },
+                  child: const Text('Discard'),
+                ),
+              )
+            else
+              OutlinedButton.icon(
                 onPressed: () => Navigator.pop(context),
-                child: const Text('Discard'),
+                icon: const Icon(Icons.arrow_back),
+                label: const Text('Back to field'),
               ),
-            ),
           ],
         ),
       ),
@@ -117,12 +166,33 @@ class ResultsScreen extends ConsumerWidget {
     final db = ref.read(databaseProvider);
 
     final entries = [
-      MeasurementEntry(sensorType: SensorType.nitrogen,   value: values.nitrogen,   unit: 'ppm'),
-      MeasurementEntry(sensorType: SensorType.phosphorus, value: values.phosphorus, unit: 'ppm'),
-      MeasurementEntry(sensorType: SensorType.potassium,  value: values.potassium,  unit: 'ppm'),
-      MeasurementEntry(sensorType: SensorType.ph,         value: values.ph,         unit: ''),
-      MeasurementEntry(sensorType: SensorType.salinity,   value: values.salinity,   unit: 'dS/m'),
-      MeasurementEntry(sensorType: SensorType.moisture,   value: values.moisture,   unit: '%'),
+      MeasurementEntry(
+        sensorType: SensorType.nitrogen,
+        value: values.nitrogen,
+        unit: 'ppm',
+      ),
+      MeasurementEntry(
+        sensorType: SensorType.phosphorus,
+        value: values.phosphorus,
+        unit: 'ppm',
+      ),
+      MeasurementEntry(
+        sensorType: SensorType.potassium,
+        value: values.potassium,
+        unit: 'ppm',
+      ),
+      MeasurementEntry(sensorType: SensorType.ph, value: values.ph, unit: 'pH'),
+      MeasurementEntry(
+        sensorType: SensorType.salinity,
+        value: values.salinity,
+        unit: 'dS/m',
+      ),
+      if (values.moistureAvailable)
+        MeasurementEntry(
+          sensorType: SensorType.moisture,
+          value: values.moisture,
+          unit: '%',
+        ),
     ];
 
     await db.insertMeasurements(readingId, entries);
@@ -136,6 +206,50 @@ class ResultsScreen extends ConsumerWidget {
       );
       Navigator.pop(context);
     }
+  }
+}
+
+class _RecommendationStatus extends StatelessWidget {
+  final RecommendationResult result;
+
+  const _RecommendationStatus({required this.result});
+
+  @override
+  Widget build(BuildContext context) {
+    final allowed = result.recommendationAllowed;
+    final color = !allowed
+        ? AppTheme.error
+        : result.confidence >= 0.8
+        ? AppTheme.statusAdequate
+        : AppTheme.statusLow;
+    final label = !allowed
+        ? 'Reading rejected'
+        : result.confidence >= 0.8
+        ? 'High-confidence assessment'
+        : 'Preliminary assessment';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.09),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.28)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            allowed ? Icons.verified_outlined : Icons.warning_amber,
+            color: color,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '$label · ${(result.confidence * 100).round()}%',
+              style: TextStyle(color: color, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -156,10 +270,7 @@ class _HeaderCard extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            cropColor,
-            Color.lerp(cropColor, Colors.black, 0.25)!,
-          ],
+          colors: [cropColor, Color.lerp(cropColor, Colors.black, 0.25)!],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -290,16 +401,18 @@ class _SensorValuesCard extends StatelessWidget {
         status: _salinityColor(values.salinity),
         statusLabel: _salinityLabel(values.salinity),
       ),
-      const _RowDivider(),
-      _SensorRow(
-        icon: Icons.water_drop_outlined,
-        label: 'Moisture',
-        value: values.moisture.toStringAsFixed(0),
-        unit: '%',
-        color: const Color(0xFF2563EB),
-        status: _moistureColor(values.moisture),
-        statusLabel: _moistureLabel(values.moisture),
-      ),
+      if (values.moistureAvailable) ...[
+        const _RowDivider(),
+        _SensorRow(
+          icon: Icons.water_drop_outlined,
+          label: 'Moisture',
+          value: values.moisture.toStringAsFixed(0),
+          unit: '%',
+          color: const Color(0xFF2563EB),
+          status: _moistureColor(values.moisture),
+          statusLabel: _moistureLabel(values.moisture),
+        ),
+      ],
     ];
 
     return Container(
@@ -494,7 +607,9 @@ class _FertilizerCard extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
               color: AppTheme.accent.withValues(alpha: 0.08),
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(15),
+              ),
             ),
             child: Row(
               children: [
@@ -510,7 +625,10 @@ class _FertilizerCard extends StatelessWidget {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: AppTheme.accent,
                     borderRadius: BorderRadius.circular(6),
@@ -529,33 +647,13 @@ class _FertilizerCard extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.scale_outlined, size: 18, color: Color(0xFF6B7168)),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Apply ${fertilizer.quantityLabel}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 15,
-                        color: AppTheme.accent,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  fertilizer.applicationNote,
-                  style: const TextStyle(
-                    color: Color(0xFF4B554D),
-                    fontSize: 13,
-                    height: 1.5,
-                  ),
-                ),
-              ],
+            child: Text(
+              'Why: ${fertilizer.reason}\n\nHow to use: ${fertilizer.applicationNote}',
+              style: const TextStyle(
+                color: Color(0xFF4B554D),
+                fontSize: 13,
+                height: 1.5,
+              ),
             ),
           ),
         ],
@@ -697,10 +795,10 @@ class _SectionHeader extends StatelessWidget {
     return Text(
       text,
       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w700,
-            color: const Color(0xFF4B554D),
-            letterSpacing: 0.2,
-          ),
+        fontWeight: FontWeight.w700,
+        color: const Color(0xFF4B554D),
+        letterSpacing: 0.2,
+      ),
     );
   }
 }

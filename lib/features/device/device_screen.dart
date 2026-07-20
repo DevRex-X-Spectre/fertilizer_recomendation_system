@@ -17,8 +17,12 @@ import '../../data/providers.dart';
 import '../results/results_screen.dart';
 import 'device_details_screen.dart';
 
+final selectedTestFieldProvider = StateProvider<Field?>((ref) => null);
+
 class DeviceScreen extends ConsumerStatefulWidget {
-  const DeviceScreen({super.key});
+  final Field? lockedField;
+
+  const DeviceScreen({super.key, this.lockedField});
 
   @override
   ConsumerState<DeviceScreen> createState() => _DeviceScreenState();
@@ -26,14 +30,20 @@ class DeviceScreen extends ConsumerStatefulWidget {
 
 class _DeviceScreenState extends ConsumerState<DeviceScreen> {
   @override
+  void initState() {
+    super.initState();
+    if (widget.lockedField != null) {
+      ref.read(selectedTestFieldProvider.notifier).state = widget.lockedField;
+    }
+  }
+
+  @override
   void dispose() {
     // Stop any active scan when the user leaves this tab — whether they
     // switch tabs, push another route, or pop the whole app. The notifier
     // lives for the app's lifetime, but we don't want it holding an
     // active BT radio for an invisible screen.
-    Future.microtask(
-      () => ref.read(bleStateProvider.notifier).stopScan(),
-    );
+    Future.microtask(() => ref.read(bleStateProvider.notifier).stopScan());
     super.dispose();
   }
 
@@ -61,7 +71,7 @@ class _DeviceScreenState extends ConsumerState<DeviceScreen> {
   Widget _buildBody(BuildContext context, BleState state) {
     switch (state.connectionState) {
       case BleConnectionState.idle:
-        return _IdleView();
+        return _IdleView(lockedField: widget.lockedField);
       case BleConnectionState.scanning:
         return _ScanningView(
           devices: state.discoveredDevices,
@@ -83,9 +93,7 @@ class _DeviceScreenState extends ConsumerState<DeviceScreen> {
 
   void _openDetails(BuildContext context, DiscoveredDevice device) {
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => DeviceDetailsScreen(device: device),
-      ),
+      MaterialPageRoute(builder: (_) => DeviceDetailsScreen(device: device)),
     );
   }
 }
@@ -93,9 +101,12 @@ class _DeviceScreenState extends ConsumerState<DeviceScreen> {
 // ── Idle ────────────────────────────────────────────────────────────────────
 
 class _IdleView extends ConsumerWidget {
-  const _IdleView();
+  final Field? lockedField;
+
+  const _IdleView({this.lockedField});
 
   Future<void> _onScanPressed(BuildContext context, WidgetRef ref) async {
+    if (ref.read(selectedTestFieldProvider) == null) return;
     final notifier = ref.read(bleStateProvider.notifier);
 
     // ── Step 1: if Bluetooth is off, open system settings so the user can
@@ -124,6 +135,8 @@ class _IdleView extends ConsumerWidget {
     final bleState = ref.watch(bleStateProvider);
     final bluetoothOn = bleState.bluetoothOn;
     final theme = Theme.of(context);
+    final selectedField = ref.watch(selectedTestFieldProvider);
+    final db = ref.watch(databaseProvider);
 
     return SafeArea(
       child: Padding(
@@ -143,10 +156,7 @@ class _IdleView extends ConsumerWidget {
                   color: AppTheme.primary.withValues(alpha: 0.04),
                 ),
                 child: Center(
-                  child: RadarAnimation(
-                    size: 260,
-                    color: AppTheme.primary,
-                  ),
+                  child: RadarAnimation(size: 260, color: AppTheme.primary),
                 ),
               ),
             ),
@@ -180,9 +190,48 @@ class _IdleView extends ConsumerWidget {
 
             const Spacer(flex: 3),
 
+            StreamBuilder<List<Field>>(
+              stream: db.watchAllFields(),
+              builder: (context, snapshot) {
+                final fields = snapshot.data ?? const <Field>[];
+                if (fields.isEmpty) {
+                  return _EmptyFieldsHint();
+                }
+                final selectedInList = fields
+                    .where((field) => field.id == selectedField?.id)
+                    .firstOrNull;
+                return DropdownButtonFormField<Field>(
+                  initialValue: selectedInList,
+                  decoration: const InputDecoration(
+                    labelText: 'Field to test',
+                    prefixIcon: Icon(Icons.grass),
+                  ),
+                  hint: const Text('Select a field before connecting'),
+                  items: fields
+                      .map(
+                        (field) => DropdownMenuItem(
+                          value: field,
+                          child: Text(
+                            '${field.name} · ${field.crop.displayName}',
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: lockedField != null
+                      ? null
+                      : (field) =>
+                            ref.read(selectedTestFieldProvider.notifier).state =
+                                field,
+                );
+              },
+            ),
+            const SizedBox(height: 12),
+
             // Primary action
             ElevatedButton.icon(
-              onPressed: () => _onScanPressed(context, ref),
+              onPressed: selectedField == null
+                  ? null
+                  : () => _onScanPressed(context, ref),
               icon: const Icon(Icons.radar, size: 20),
               label: const Text('Scan for Device'),
               style: ElevatedButton.styleFrom(
@@ -318,8 +367,7 @@ class _ScanningView extends StatelessWidget {
                 const SizedBox(height: 8),
                 _ScanStatusRow(
                   count: devices.length,
-                  soilSenseCount:
-                      devices.where((d) => d.isSoilSense).length,
+                  soilSenseCount: devices.where((d) => d.isSoilSense).length,
                   onRescan: onRescan,
                   onStop: onStop,
                   scanning: scanning,
@@ -347,9 +395,9 @@ class _ScanningView extends StatelessWidget {
                 : ListView.separated(
                     padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
                     itemCount: devices.length,
-                    separatorBuilder: (context, index) => const SizedBox(height: 8),
-                    itemBuilder: (context, i) =>
-                        _DeviceListTile(
+                    separatorBuilder: (context, index) =>
+                        const SizedBox(height: 8),
+                    itemBuilder: (context, i) => _DeviceListTile(
                       device: devices[i],
                       onTap: () => onDeviceTap(devices[i]),
                     ),
@@ -381,7 +429,7 @@ class _ScanStatusRow extends StatelessWidget {
       return count == 0
           ? 'Scan stopped · no devices found'
           : 'Scan stopped · $count device${count == 1 ? '' : 's'} · '
-              '$soilSenseCount SoilSense';
+                '$soilSenseCount SoilSense';
     }
     if (count == 0) return 'Scanning…';
     return '$count device${count == 1 ? '' : 's'} found · '
@@ -413,7 +461,11 @@ class _ScanStatusRow extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
               ] else ...[
-                const Icon(Icons.check_circle, size: 14, color: AppTheme.primary),
+                const Icon(
+                  Icons.check_circle,
+                  size: 14,
+                  color: AppTheme.primary,
+                ),
                 const SizedBox(width: 6),
               ],
               Text(
@@ -485,10 +537,7 @@ class _LookingHint extends StatelessWidget {
             const Text(
               'Hold your SoilSense hardware close to the phone.',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Color(0xFF9CA39B),
-                fontSize: 12,
-              ),
+              style: TextStyle(color: Color(0xFF9CA39B), fontSize: 12),
             ),
           ],
         ),
@@ -677,9 +726,9 @@ class _ConnectingView extends StatelessWidget {
           const SizedBox(height: 24),
           Text(
             'Connecting...',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -737,17 +786,24 @@ class _ConnectedViewState extends ConsumerState<_ConnectedView> {
     _navigating = true;
 
     final db = ref.read(databaseProvider);
+    final field = ref.read(selectedTestFieldProvider);
+    if (field == null) {
+      _navigating = false;
+      return;
+    }
 
-    final tempReading = await db.insertReading(
-      TestReadingsCompanion.insert(fieldId: 0),
+    final readingId = await db.insertReading(
+      TestReadingsCompanion.insert(fieldId: field.id),
     );
 
     if (mounted) {
       await Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => _ResultsGate(
-            tempReadingId: tempReading,
-            bleValues: values,
+          builder: (_) => ResultsScreen(
+            readingId: readingId,
+            fieldId: field.id,
+            crop: field.crop,
+            values: values,
           ),
         ),
       );
@@ -783,7 +839,10 @@ class _ConnectedViewState extends ConsumerState<_ConnectedView> {
             // Connection chip
             Center(
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: AppTheme.statusAdequate.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(99),
@@ -832,8 +891,10 @@ class _ConnectedViewState extends ConsumerState<_ConnectedView> {
             // Action area
             if (!state.isReadingInProgress)
               ElevatedButton.icon(
-                onPressed: () =>
-                    ref.read(bleStateProvider.notifier).triggerReading(),
+                onPressed: ref.watch(selectedTestFieldProvider) == null
+                    ? null
+                    : () =>
+                          ref.read(bleStateProvider.notifier).triggerReading(),
                 icon: const Icon(Icons.science_outlined, size: 20),
                 label: const Text('Run Soil Test'),
                 style: ElevatedButton.styleFrom(
@@ -846,8 +907,7 @@ class _ConnectedViewState extends ConsumerState<_ConnectedView> {
             const SizedBox(height: 12),
 
             OutlinedButton.icon(
-              onPressed: () =>
-                  ref.read(bleStateProvider.notifier).disconnect(),
+              onPressed: () => ref.read(bleStateProvider.notifier).disconnect(),
               icon: const Icon(Icons.link_off, size: 18),
               label: const Text('Disconnect'),
               style: OutlinedButton.styleFrom(
@@ -863,56 +923,150 @@ class _ConnectedViewState extends ConsumerState<_ConnectedView> {
 
 // ── Reading indicator ─────────────────────────────────────────────────────
 
-class _ReadingIndicator extends StatelessWidget {
+// ── Sensor grid ───────────────────────────────────────────────────────────
+
+class _ReadingIndicator extends ConsumerStatefulWidget {
   const _ReadingIndicator();
 
   @override
+  ConsumerState<_ReadingIndicator> createState() => _ReadingIndicatorState();
+}
+
+class _ReadingIndicatorState extends ConsumerState<_ReadingIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final count = ref.watch(bleStateProvider).samplesCollected;
+    final progress = (count / 5).clamp(0.0, 1.0);
+    final stage = count == 0
+        ? 'Establishing probe contact'
+        : count < 3
+        ? 'Collecting soil readings'
+        : count < 5
+        ? 'Checking reading stability'
+        : 'Analyzing soil condition';
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: AppTheme.primary.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: AppTheme.primary.withValues(alpha: 0.18),
+        gradient: LinearGradient(
+          colors: [
+            AppTheme.primary.withValues(alpha: 0.10),
+            const Color(0xFFECF7ED),
+          ],
         ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppTheme.primary.withValues(alpha: 0.22)),
       ),
-      child: Row(
+      child: Column(
         children: [
-          const SizedBox(
-            width: 22,
-            height: 22,
-            child: CircularProgressIndicator(strokeWidth: 2.5),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          SizedBox(
+            width: 104,
+            height: 104,
+            child: Stack(
+              alignment: Alignment.center,
               children: [
-                Text(
-                  'Taking reading…',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                ScaleTransition(
+                  scale: Tween(begin: 0.82, end: 1.0).animate(
+                    CurvedAnimation(
+                      parent: _controller,
+                      curve: Curves.easeInOut,
+                    ),
+                  ),
+                  child: Container(
+                    width: 96,
+                    height: 96,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppTheme.primary.withValues(alpha: 0.08),
+                    ),
+                  ),
                 ),
-                const SizedBox(height: 2),
-                const Text(
-                  'Insert the probe into the soil',
-                  style: TextStyle(
-                    color: Color(0xFF6B7168),
-                    fontSize: 13,
+                SizedBox(
+                  width: 76,
+                  height: 76,
+                  child: CircularProgressIndicator(
+                    value: progress == 0 ? null : progress,
+                    strokeWidth: 5,
+                    strokeCap: StrokeCap.round,
+                    backgroundColor: Colors.white,
+                  ),
+                ),
+                Container(
+                  width: 54,
+                  height: 54,
+                  decoration: const BoxDecoration(
+                    color: AppTheme.primary,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.sensors,
+                    color: Colors.white,
+                    size: 28,
                   ),
                 ),
               ],
             ),
+          ),
+          const SizedBox(height: 14),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            child: Text(
+              stage,
+              key: ValueKey(stage),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: AppTheme.primary,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            count == 0
+                ? 'Keep the probe firmly inserted and still'
+                : 'Sample $count of 5 · Keep the probe still',
+            style: const TextStyle(color: Color(0xFF5F6B61), fontSize: 13),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(5, (index) {
+              final complete = index < count;
+              return AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                width: complete ? 28 : 12,
+                height: 8,
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                decoration: BoxDecoration(
+                  color: complete
+                      ? AppTheme.primary
+                      : AppTheme.primary.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(99),
+                ),
+              );
+            }),
           ),
         ],
       ),
     );
   }
 }
-
-// ── Sensor grid ───────────────────────────────────────────────────────────
 
 class _SensorGrid extends StatelessWidget {
   final SensorValues values;
@@ -957,13 +1111,14 @@ class _SensorGrid extends StatelessWidget {
         unit: 'dS/m',
         color: const Color(0xFF0891B2),
       ),
-      _SensorTile(
-        icon: Icons.water_drop_outlined,
-        label: 'Moisture',
-        value: values.moisture.toStringAsFixed(0),
-        unit: '%',
-        color: const Color(0xFF2563EB),
-      ),
+      if (values.moistureAvailable)
+        _SensorTile(
+          icon: Icons.water_drop_outlined,
+          label: 'Moisture',
+          value: values.moisture.toStringAsFixed(0),
+          unit: '%',
+          color: const Color(0xFF2563EB),
+        ),
     ];
 
     return GridView.count(
@@ -1091,18 +1246,15 @@ class _ErrorView extends ConsumerWidget {
             Text(
               _errorTitle(state.errorMessage),
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             Text(
               state.errorMessage ?? 'An unknown error occurred.',
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Color(0xFF6B7168),
-                height: 1.45,
-              ),
+              style: const TextStyle(color: Color(0xFF6B7168), height: 1.45),
             ),
             const SizedBox(height: 32),
             FilledButton(
@@ -1114,8 +1266,7 @@ class _ErrorView extends ConsumerWidget {
             ),
             const SizedBox(height: 12),
             TextButton(
-              onPressed: () =>
-                  ref.read(bleStateProvider.notifier).disconnect(),
+              onPressed: () => ref.read(bleStateProvider.notifier).disconnect(),
               child: const Text('Back'),
             ),
           ],
@@ -1148,10 +1299,7 @@ class _ResultsGate extends ConsumerStatefulWidget {
   final int tempReadingId;
   final SensorValues bleValues;
 
-  const _ResultsGate({
-    required this.tempReadingId,
-    required this.bleValues,
-  });
+  const _ResultsGate({required this.tempReadingId, required this.bleValues});
 
   @override
   ConsumerState<_ResultsGate> createState() => _ResultsGateState();
@@ -1188,8 +1336,8 @@ class _ResultsGateState extends ConsumerState<_ResultsGate> {
                   Text(
                     'Which field did you test?',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   const Text(
@@ -1200,7 +1348,8 @@ class _ResultsGateState extends ConsumerState<_ResultsGate> {
                   Expanded(
                     child: ListView.separated(
                       itemCount: fields.length,
-                      separatorBuilder: (context, index) => const SizedBox(height: 8),
+                      separatorBuilder: (context, index) =>
+                          const SizedBox(height: 8),
                       itemBuilder: (context, i) {
                         final f = fields[i];
                         return _FieldPickerTile(
@@ -1274,9 +1423,7 @@ class _FieldPickerTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: selected
-          ? AppTheme.primaryContainer
-          : AppTheme.surfaceTint,
+      color: selected ? AppTheme.primaryContainer : AppTheme.surfaceTint,
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: onTap,
@@ -1286,18 +1433,14 @@ class _FieldPickerTile extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: selected
-                  ? AppTheme.primary
-                  : AppTheme.outlineVariant,
+              color: selected ? AppTheme.primary : AppTheme.outlineVariant,
               width: selected ? 1.5 : 1,
             ),
           ),
           child: Row(
             children: [
               Icon(
-                field.crop == Crop.maize
-                    ? Icons.agriculture
-                    : Icons.rice_bowl,
+                field.crop == Crop.maize ? Icons.agriculture : Icons.rice_bowl,
                 color: selected ? AppTheme.primary : const Color(0xFF6B7168),
               ),
               const SizedBox(width: 12),
@@ -1363,9 +1506,9 @@ class _EmptyFieldsHint extends StatelessWidget {
             const SizedBox(height: 20),
             Text(
               'No fields created yet',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             const Text(

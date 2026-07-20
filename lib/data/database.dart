@@ -20,6 +20,8 @@ class Fields extends Table {
   IntColumn get id => integer().autoIncrement()();
   TextColumn get name => text().withLength(min: 1, max: 100)();
   IntColumn get crop => intEnum<Crop>()();
+  RealColumn get latitude => real().nullable()();
+  RealColumn get longitude => real().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 }
 
@@ -48,7 +50,18 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (m) => m.createAll(),
+    onUpgrade: (m, from, to) async {
+      if (from < 2) {
+        await m.addColumn(fields, fields.latitude);
+        await m.addColumn(fields, fields.longitude);
+      }
+    },
+  );
 
   // -------------------------------------------------------------------------
   // Field CRUD
@@ -56,8 +69,7 @@ class AppDatabase extends _$AppDatabase {
 
   Stream<List<Field>> watchAllFields() => select(fields).watch();
 
-  Future<int> insertField(FieldsCompanion field) =>
-      into(fields).insert(field);
+  Future<int> insertField(FieldsCompanion field) => into(fields).insert(field);
 
   Future<bool> updateField(Field field) => update(fields).replace(field);
 
@@ -82,8 +94,9 @@ class AppDatabase extends _$AppDatabase {
       (delete(testReadings)..where((t) => t.id.equals(id))).go();
 
   Future<int> updateReadingField(int readingId, int fieldId) {
-    return (update(testReadings)..where((t) => t.id.equals(readingId)))
-        .write(TestReadingsCompanion(fieldId: Value(fieldId)));
+    return (update(testReadings)..where((t) => t.id.equals(readingId))).write(
+      TestReadingsCompanion(fieldId: Value(fieldId)),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -110,9 +123,9 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<List<MeasurementRow>> getMeasurementsForReading(int readingId) async {
-    final rows = await (select(sensorMeasurements)
-          ..where((t) => t.readingId.equals(readingId)))
-        .get();
+    final rows = await (select(
+      sensorMeasurements,
+    )..where((t) => t.readingId.equals(readingId))).get();
     return rows;
   }
 
@@ -121,11 +134,12 @@ class AppDatabase extends _$AppDatabase {
     int fieldId, {
     int limit = 20,
   }) async {
-    final readings = await (select(testReadings)
-          ..where((t) => t.fieldId.equals(fieldId))
-          ..orderBy([(t) => OrderingTerm.desc(t.takenAt)])
-          ..limit(limit))
-        .get();
+    final readings =
+        await (select(testReadings)
+              ..where((t) => t.fieldId.equals(fieldId))
+              ..orderBy([(t) => OrderingTerm.desc(t.takenAt)])
+              ..limit(limit))
+            .get();
 
     final entries = <FieldHistoryEntry>[];
     for (final r in readings) {
